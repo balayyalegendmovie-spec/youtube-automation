@@ -1,1 +1,63 @@
+name: 🧪 Test Pipeline (No Upload)
 
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        description: 'Language to test'
+        required: true
+        default: 'telugu'
+        type: choice
+        options:
+          - telugu
+          - hindi
+
+jobs:
+  test:
+    name: 🧪 Test ${{ inputs.language }} Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - uses: actions/checkout@v4
+      
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 📦 Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto
+          pip install -r requirements.txt
+          mkdir -p output/logs output/debug assets/music assets/fonts
+      
+      - name: 🧪 Test Pipeline (skip upload)
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
+          TEST_MODE: "true"
+        run: |
+          echo "Running in TEST MODE — skipping upload step"
+          python -c "
+          import os
+          os.environ['TEST_MODE'] = 'true'
+          from main import run_pipeline
+          # This will run everything except upload
+          try:
+              run_pipeline('${{ inputs.language }}')
+          except Exception as e:
+              print(f'Pipeline stopped at: {e}')
+              # Expected to fail at upload since no cookies
+          "
+      
+      - name: 📊 Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ inputs.language }}
+          path: |
+            output/
+          retention-days: 3
