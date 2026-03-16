@@ -41,25 +41,48 @@ jobs:
           pip install -r requirements.txt
 
       - name: Setup
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: |
           mkdir -p config/cookies assets/fonts assets/music output/logs/screenshots
           echo '{"cookies":[]}' > config/cookies/telugu_channel.json
           echo '{"cookies":[]}' > config/cookies/hindi_channel.json
 
+          if [ ! -f "config/config.yaml" ]; then
+            echo "ERROR: config/config.yaml not found!"
+            echo "Make sure it exists in your repository."
+            ls -la config/ || echo "config/ directory missing"
+            exit 1
+          fi
+
           cd assets/fonts
           [ ! -f "NotoSansTelugu-Bold.ttf" ] && wget -q "https://github.com/google/fonts/raw/main/ofl/notosanstelugu/NotoSansTelugu%5Bwdth%2Cwght%5D.ttf" -O NotoSansTelugu-Bold.ttf 2>/dev/null || true
           [ ! -f "NotoSansDevanagari-Bold.ttf" ] && wget -q "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf" -O NotoSansDevanagari-Bold.ttf 2>/dev/null || true
-          cd ../music
+          cd ../../assets/music
           [ ! -f "bg_ambient.mp3" ] && ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 120 -b:a 128k -f mp3 bg_ambient.mp3 2>/dev/null || true
+          cd ../..
 
           python3 << 'PYEOF'
           import yaml, os
-          with open('config/config.yaml', 'r') as f:
+
+          config_path = "config/config.yaml"
+          if not os.path.exists(config_path):
+              print(f"ERROR: {config_path} not found in repo!")
+              exit(1)
+
+          with open(config_path, 'r') as f:
               config = yaml.safe_load(f)
+
           config['gemini']['api_key'] = os.environ.get('GEMINI_API_KEY', '')
           config['footage']['pexels_api_key'] = os.environ.get('PEXELS_API_KEY', '')
-          with open('config/config.yaml', 'w') as f:
+
+          with open(config_path, 'w') as f:
               yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+
+          print(f"Gemini: {'SET' if os.environ.get('GEMINI_API_KEY') else 'MISSING'}")
+          print(f"Pexels: {'SET' if os.environ.get('PEXELS_API_KEY') else 'MISSING'}")
+          print("Config updated")
           PYEOF
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
