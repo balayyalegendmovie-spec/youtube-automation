@@ -1,1 +1,25 @@
+# AI & LLM
+google-generativeai>=0.8.0
 
+# Text-to-Speech  
+edge-tts>=6.1.0
+
+# Image Generation
+aiohttp>=3.9.0
+Pillow>=10.0.0
+
+# Video Processing
+moviepy>=1.0.3
+numpy>=1.24.0
+scipy>=1.11.0
+
+# Web Scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+
+# Browser Automation
+playwright>=1.44.0
+
+# Utilities
+pyyaml>=6.0
+aiofiles>=23.0.0
