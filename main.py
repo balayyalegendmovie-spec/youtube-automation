@@ -210,7 +210,7 @@ class YouTubeAutomationPipeline:
             
             # Full audio for long-form
             full_voice_path = f"{output_dir}/full_voice.mp3"
-            full_subtitle_path = f"{output_dir}/full_subtitles.vtt"
+            full_subtitle_path = f"{output_dir}/full_subtitles.srt"
             
             voice_maker.generate_full_audio(
                 script=reviewed_script,
