@@ -112,21 +112,20 @@ class GeminiBrain:
             self.providers.append(GroqProvider(self.groq_key, "llama-3.3-70b-versatile"))
 
         if self.groq_key_2:
-            self.providers.append(GroqProvider(self.groq_key_2, "llama3-70b-8192"))
+            self.providers.append(GroqProvider(self.groq_key_2, "mistral-saba-24b"))
 
         if self.gemini_key:
             self.providers.append(GeminiProvider(self.gemini_key, "gemini-2.0-flash"))
 
         if self.groq_key:
-            self.providers.append(GroqProvider(self.groq_key, "llama-3.3-70b-specdec"))
+            self.providers.append(GroqProvider(self.groq_key, "deepseek-r1-distill-llama-70b"))
 
         if not self.providers:
             raise Exception("No AI API keys! Set GEMINI_API_KEY or GROQ_API_KEY")
 
         logger.info("🧠 AI Brain initialized with providers:")
         for p in self.providers:
-            status = "READY" if p.available else "NO KEY"
-            logger.info(f"   → {p.name}: {status}")
+            logger.info(f"   → {p.name}: {'READY' if p.available else 'NO KEY'}")
 
     def _call_ai(self, prompt, expect_json=False):
         last_error = None
@@ -137,7 +136,6 @@ class GeminiBrain:
                 logger.info(f"   🤖 Trying {provider.name}...")
                 text = provider.generate(prompt).strip()
                 logger.info(f"   ✅ {provider.name} responded ({len(text)} chars)")
-
                 if expect_json:
                     text = re.sub(r'```json\s*', '', text)
                     text = re.sub(r'```\s*', '', text)
@@ -147,278 +145,197 @@ class GeminiBrain:
                         text = json_match.group(0)
                     return json.loads(text)
                 return text
-
             except json.JSONDecodeError as e:
-                logger.warning(f"   ⚠️ {provider.name} JSON parse error: {e}")
+                logger.warning(f"   ⚠️ {provider.name} JSON error: {e}")
                 last_error = e
                 continue
             except Exception as e:
-                error_str = str(e)
-                logger.warning(f"   ⚠️ {provider.name} failed: {error_str[:100]}")
+                logger.warning(f"   ⚠️ {provider.name} failed: {str(e)[:100]}")
                 last_error = e
-                if '429' in error_str or 'rate' in error_str.lower() or 'quota' in error_str.lower():
-                    logger.info(f"   ↪️ Switching to next provider...")
+                if '429' in str(e) or 'rate' in str(e).lower() or 'quota' in str(e).lower():
+                    logger.info(f"   ↪️ Switching...")
                     continue
                 time.sleep(3)
                 continue
-
-        raise Exception(f"All AI providers failed. Last error: {last_error}")
+        raise Exception(f"All providers failed. Last: {last_error}")
 
     def generate_topics(self, niche, language, trend_data=None, count=3):
         logger.info(f"🧠 STEP: Generating topics for '{niche}' in {language}...")
-
         trend_context = ""
         if trend_data:
-            trend_topics = [t.get('topic', '') for t in trend_data[:10]]
-            trend_context = f"\nCurrently trending in India:\n{json.dumps(trend_topics[:5], indent=2)}\nTry to relate topics to these trends.\n"
+            topics_list = [t.get('topic', '') for t in trend_data[:5]]
+            trend_context = f"\nTrending in India:\n{json.dumps(topics_list, indent=2)}\nRelate to these.\n"
 
         lang_name = "తెలుగు" if language == "telugu" else "हिंदी"
-
-        prompt = f"""You are a YouTube content strategist for Indian audience.
-
-Generate {count} video topic ideas.
-
-NICHE: {niche}
-LANGUAGE: {language} ({lang_name})
-AUDIENCE: Indian viewers ages 16-35
-
+        prompt = f"""YouTube content strategist for Indian audience.
+Generate {count} video topics.
+NICHE: {niche}, LANGUAGE: {language} ({lang_name}), AUDIENCE: 16-35 India
 {trend_context}
-
-Requirements:
-- Topics must be fascinating and click-worthy
-- Must work as 10-minute explainer videos
-- Each must be splittable into 4-5 standalone shorts
-- Avoid politics, religion, controversy
-- Include emotional hooks
-
-Return ONLY valid JSON array:
-[
-    {{
-        "topic": "Topic in English",
-        "topic_local": "Topic in {language}",
-        "search_keywords": ["keyword1", "keyword2", "keyword3"],
-        "why_viral": "Why this will get views",
-        "emotions_map": {{
-            "hook": "excited",
-            "section_1": "curious",
-            "section_2": "serious",
-            "section_3": "cheerful",
-            "section_4": "excited",
-            "cta": "warm"
-        }},
-        "sections": [
-            "Section 1 title",
-            "Section 2 title",
-            "Section 3 title",
-            "Section 4 title"
-        ],
-        "estimated_interest": "high"
-    }}
-]"""
+Requirements: fascinating, 10-min explainer, splittable into shorts, avoid politics/religion
+Return ONLY JSON array:
+[{{"topic":"English","topic_local":"{language}","search_keywords":["k1","k2"],"why_viral":"reason","emotions_map":{{"hook":"excited","section_1":"curious","section_2":"serious","section_3":"cheerful","section_4":"excited","cta":"warm"}},"sections":["S1","S2","S3","S4"],"estimated_interest":"high"}}]"""
 
         topics = self._call_ai(prompt, expect_json=True)
         if not isinstance(topics, list):
             topics = [topics]
-
-        logger.info(f"   ✅ Generated {len(topics)} topics:")
+        logger.info(f"   ✅ {len(topics)} topics:")
         for i, t in enumerate(topics):
             logger.info(f"      {i+1}. {t.get('topic', 'N/A')}")
         return topics
 
-    def generate_script(self, topic_data, language, target_words=1500):
-        """Generate emotionally rich script — ENFORCES minimum length"""
-
+    def generate_script(self, topic_data, language, target_words=2000):
+        """Generate natural Tenglish/Hinglish conversational script"""
         topic = topic_data.get('topic', '')
         topic_local = topic_data.get('topic_local', topic)
 
         logger.info(f"🧠 STEP: Generating script for '{topic}'...")
         logger.info(f"   Language: {language}, Target: {target_words} words")
 
-        lang_name = "తెలుగు" if language == "telugu" else "हिंदी"
-        script_type = "Telugu" if language == "telugu" else "Devanagari"
+        if language == "telugu":
+            lang_instruction = """LANGUAGE STYLE — "Tenglish" (Telugu + English mix):
+- Write in Telugu script (తెలుగు) BUT mix English words naturally (30-40%)
+- Example: "AI technology అనేది చాలా powerful గా develop అవుతోంది"
+- Example: "ఈ concept ని simple గా explain చేస్తాను"
+- Example: "India లో almost 50 million students ఈ technology use చేస్తున్నారు"
+- Talk like a young Telugu YouTuber, NOT a textbook
+- Use "guys", "OK so", "basically", "actually" naturally in between"""
+        else:
+            lang_instruction = """LANGUAGE STYLE — "Hinglish" (Hindi + English mix):
+- Write in Hindi/Devanagari BUT mix English words naturally (30-40%)
+- Example: "AI technology बहुत powerful तरीके से develop हो रही है"
+- Talk like a young Hindi YouTuber, NOT formal news reader"""
 
-        prompt = f"""You are a professional YouTube scriptwriter. Write a LONG, DETAILED video script.
+        prompt = f"""You are a TOP Indian YouTuber making complex topics EXCITING.
+Style: energetic, funny, relatable, like talking to your best friend.
 
 TOPIC: "{topic}" / "{topic_local}"
-LANGUAGE: {language} ({lang_name}) using {script_type} script
 
-ABSOLUTE REQUIREMENT: Write MINIMUM 1200 words. Count carefully.
-Each section MUST be 150-200 words minimum.
-Short scripts will be rejected. Write MORE not less.
+{lang_instruction}
 
-Write naturally like you're explaining to a friend. Mix English technical words.
+CRITICAL: MINIMUM 1800 WORDS. This is a 10-minute video.
+Write like you're TALKING to camera, not reading.
+Use "guys", excitement, reactions, audience questions.
 
-STRUCTURE (use these EXACT markers):
+STRUCTURE:
 
 [HOOK]
-(Write 150+ words. Start with a shocking question or fact. Create intense curiosity.
-Ask "మీకు తెలుసా?" or "क्या आपको पता है?" to hook the viewer.
-Explain WHY this topic matters to them personally.
-Tease what they'll learn. Make them NEED to keep watching.)
+(250+ words. MOST IMPORTANT section.
+Start SHOCKING: "Guys... ఈ రోజు topic వింటే మీరు shock అవుతారు!"
+Or start with impossible question: "Wait... మీకు తెలుసా ..."
+Create INTENSE curiosity. Tell them WHY they MUST watch.
+Use dramatic language. Make a PROMISE about what they'll learn.
+Ask them to comment their guess: "comment లో చెప్పండి మీ answer!")
 
-[SECTION_1: {{Interesting title in {language}}}]
-(Write 200+ words. First main point explained in detail.
-Give a specific real-world EXAMPLE from India.
-Use numbers and statistics. Compare to something relatable.
-End with curiosity for next section.)
+[SECTION_1: {{Catchy title in Telugu+English}}]
+(300+ words. First main point.
+"OK so first thing..." casual opener.
+REAL examples from India with specific numbers.
+Tell a mini STORY about a real person/place.
+Compare to relatable things from daily Indian life.
+React: "Seriously, ఇది crazy right?!"
+End with teaser: "కానీ wait... next part even more interesting!")
 
-[SECTION_2: {{Interesting title in {language}}}]
-(Write 200+ words. Second point — go DEEPER.
-Reveal something surprising or counter-intuitive.
-Tell a mini-story or case study. Make it dramatic.
-Include a "but here's the twist" moment.)
+[SECTION_2: {{Catchy title in Telugu+English}}]
+(300+ words. Go DEEPER.
+"ఇప్పుడు real interesting part కి వచ్చాం..."
+Reveal something SURPRISING or counter-intuitive.
+"మీరు believe చేయరు కానీ..." style reveals.
+Include a dramatic "plot twist" moment.
+React: "నేను first time విన్నప్పుడు కూడా shock అయ్యాను!")
 
-[SECTION_3: {{Interesting title in {language}}}]
-(Write 200+ words. The HUMAN angle.
-How does this affect normal people in India?
-Give a relatable everyday example.
-Connect to Indian culture, daily life, cities.)
+[SECTION_3: {{Catchy title in Telugu+English}}]
+(300+ words. PERSONAL and RELATABLE.
+"ఇది మన daily life ని ఎలా affect చేస్తుందంటే..."
+Connect to everyday Indian life — phone, food, family, work.
+Give PRACTICAL examples anyone can relate to.
+Use humor: "మీ mom కి చెప్పండి — she'll be like WHAT?!"
+Ask audience: "మీరు ఇలా experience చేశారా? comment చేయండి!")
 
-[SECTION_4: {{Interesting title in {language}}}]
-(Write 200+ words. THE CLIMAX — most mind-blowing revelation.
-Save the absolute BEST fact or insight for here.
-Build tension, then reveal. Make viewers say "WOW!")
+[SECTION_4: {{Catchy title in Telugu+English}}]
+(300+ words. CLIMAX — most MIND-BLOWING part.
+"OK guys... ఇప్పుడు BIGGEST revelation..."
+Build tension: "Ready? ... 3... 2... 1..."
+DROP the most amazing fact.
+React emotionally: "Crazy right?! Mind = blown!"
+Make viewers feel WOW.)
 
 [CTA]
-(Write 100+ words. Summarize 3 key takeaways.
-Warm call to subscribe. Tease next video topic.
-End with a memorable one-liner.)
+(150+ words. Warm friendly ending.
+"So guys, ఈ రోజు main points ఏంటంటే..."
+3 bullet point takeaways.
+"ఈ video నచ్చితే like కొట్టండి, subscribe చేయండి, bell icon press చేయండి!"
+Tease next video: "Next video లో even MORE mind-blowing topic..."
+Memorable one-liner ending.)
 
-RULES:
-- Add [VISUAL: description] tags (2-3 per section)
-- Ask rhetorical questions every 3-4 sentences
-- Include at least 8 specific numbers/facts
-- Reference Indian context
-- Total MUST be over 1200 words
+Add [VISUAL: description] tags every 3-4 sentences.
+Ask viewer questions every 5 sentences.
+Use reactions: "Whoa!", "Seriously?!", "Mind blown!"
+Reference: cricket, Bollywood, Indian cities, festivals, food.
 
+MINIMUM 1800 WORDS. Write MORE. Tell STORIES. Be DETAILED.
 Write ONLY the script."""
 
         script = self._call_ai(prompt)
         word_count = len(script.split())
-        logger.info(f"   ✅ Script generated: {word_count} words")
+        logger.info(f"   ✅ Script: {word_count} words")
 
         if word_count < 800:
-            logger.info(f"   🔄 Script too short ({word_count} words), requesting expansion...")
-
-            expand_prompt = f"""Expand this {language} script to 1200+ words. Add more details, examples, statistics, and engagement to each section. Keep [HOOK], [SECTION_1] etc markers.
+            logger.info(f"   🔄 Expanding ({word_count} words)...")
+            try:
+                expand = f"""Expand this {language} script to 1800+ words. Add stories, examples, reactions, audience interaction. Keep markers.
 
 SCRIPT:
 {script[:3000]}
 
-Write expanded version:"""
-
-            try:
-                expanded = self._call_ai(expand_prompt)
-                expanded_count = len(expanded.split())
-                if expanded_count > word_count:
+EXPANDED (1800+ words):"""
+                expanded = self._call_ai(expand)
+                if len(expanded.split()) > word_count:
                     script = expanded
-                    logger.info(f"   ✅ Expanded to {expanded_count} words")
-                else:
-                    logger.info(f"   ⚠️ Expansion didn't help ({expanded_count} words)")
+                    logger.info(f"   ✅ Expanded to {len(expanded.split())} words")
             except Exception as e:
                 logger.warning(f"   ⚠️ Expansion failed: {e}")
-                logger.info(f"   Using original {word_count}-word script")
 
         return script
 
     def review_script(self, script, language, topic):
-        logger.info(f"🧠 STEP: AI reviewing script quality...")
-
+        logger.info(f"🧠 STEP: Reviewing script...")
         prompt = f"""Review this {language} YouTube script about "{topic}".
-
 SCRIPT:
 ---
 {script[:3000]}
 ---
-
-Score each category 1-10 and provide fixes.
-
 Return JSON:
-{{
-    "overall_score": 8,
-    "approved": true,
-    "scores": {{
-        "hook": 8,
-        "facts": 9,
-        "engagement": 7,
-        "language": 8,
-        "emotions": 8,
-        "safety": 10
-    }},
-    "factual_issues": [],
-    "improvements": ["improvement 1"],
-    "revised_hook": null,
-    "revised_script": null,
-    "summary": "Brief summary"
-}}
-
-If overall_score < 7, include revised_script with fixes."""
+{{"overall_score":8,"approved":true,"scores":{{"hook":8,"facts":9,"engagement":7,"language":8}},"improvements":["tip1"],"summary":"brief"}}"""
 
         try:
             review = self._call_ai(prompt, expect_json=True)
-        except Exception as e:
-            logger.warning(f"   ⚠️ Review failed: {e}")
-            review = {
-                "overall_score": 7, "approved": True,
-                "scores": {}, "improvements": [],
-                "summary": "Review skipped due to API error"
-            }
+        except Exception:
+            review = {"overall_score": 7, "approved": True, "scores": {},
+                      "improvements": [], "summary": "Review skipped"}
 
-        score = review.get('overall_score', 7)
-        logger.info(f"   📊 Review score: {score}/10")
-
-        final_script = script
-        if review.get('revised_script') and score < 6:
-            logger.info(f"   🔄 Using revised script")
-            final_script = review['revised_script']
-
-        return final_script, review
+        logger.info(f"   📊 Score: {review.get('overall_score', 7)}/10")
+        final = script
+        if review.get('revised_script') and review.get('overall_score', 7) < 6:
+            final = review['revised_script']
+        return final, review
 
     def generate_metadata(self, topic_data, language, video_type="long"):
         topic = topic_data.get('topic', '')
         topic_local = topic_data.get('topic_local', topic)
-
         logger.info(f"🧠 Generating {video_type} metadata...")
 
         if video_type == "long":
-            prompt = f"""Generate YouTube video metadata in {language}.
-
-Topic: "{topic}" / "{topic_local}"
-Type: Long-form (8-12 min), Indian audience
-
-Return JSON:
-{{
-    "title": "Compelling title in {language} with emoji (50-70 chars)",
-    "title_english": "Same in English",
-    "description": "300-word SEO description in {language} with hashtags and subscribe CTA",
-    "tags": ["15-20 mixed {language} and English tags"],
-    "thumbnail_text": "2-4 bold words in {language} for thumbnail"
-}}"""
+            prompt = f"""YouTube metadata in {language}. Topic: "{topic}"/"{topic_local}". Long-form, Indian audience.
+Return JSON: {{"title":"{language} title with emoji (50-70 chars)","title_english":"English","description":"300-word SEO description","tags":["15-20 tags"],"thumbnail_text":"2-4 bold words"}}"""
         else:
-            prompt = f"""Generate YouTube Shorts metadata in {language}.
-
-Topic: "{topic}"
-Type: Short (30-60 sec)
-
-Return JSON:
-{{
-    "title": "Catchy title in {language} (40-60 chars) #shorts",
-    "description": "Brief description with hashtags",
-    "tags": ["10-15 tags including #shorts"],
-    "thumbnail_text": "1-3 words in {language}"
-}}"""
+            prompt = f"""YouTube Shorts metadata in {language}. Topic: "{topic}".
+Return JSON: {{"title":"catchy {language} title #shorts","description":"brief + hashtags","tags":["10 tags + #shorts"],"thumbnail_text":"1-3 words"}}"""
 
         try:
             metadata = self._call_ai(prompt, expect_json=True)
-        except Exception as e:
-            logger.warning(f"   ⚠️ Metadata generation failed: {e}")
-            metadata = {
-                "title": topic_local or topic,
-                "title_english": topic,
-                "description": f"Video about {topic}",
-                "tags": [topic, language, "facts", "shorts"],
-                "thumbnail_text": (topic_local or topic)[:20]
-            }
+        except Exception:
+            metadata = {"title": topic_local or topic, "description": f"About {topic}",
+                       "tags": [topic, language, "facts"], "thumbnail_text": (topic_local or topic)[:20]}
 
         if video_type == "short":
             tags = metadata.get('tags', [])
@@ -431,98 +348,63 @@ Return JSON:
 
     def get_footage_keywords(self, script):
         logger.info(f"🧠 Extracting footage keywords...")
-
-        prompt = f"""From this script, extract 15 ENGLISH keywords for stock footage search.
-
-SCRIPT (first 2000 chars):
-{script[:2000]}
-
-Focus on visual scenes: nature, technology, space, abstract.
-Return ONLY a JSON array of strings.
-Example: ["satellite orbiting earth", "neural network", "ocean waves"]"""
+        prompt = f"""From this script, extract 15 ENGLISH keywords for HD stock footage.
+SCRIPT: {script[:2000]}
+Return ONLY JSON array: ["keyword1", "keyword2"]"""
 
         try:
-            keywords = self._call_ai(prompt, expect_json=True)
-            if not isinstance(keywords, list):
-                keywords = ["technology", "science", "space", "nature", "abstract"]
+            kw = self._call_ai(prompt, expect_json=True)
+            if not isinstance(kw, list):
+                kw = ["technology", "science", "space", "nature", "abstract"]
         except Exception:
-            keywords = [
-                "technology", "science", "space", "nature", "abstract",
-                "computer", "earth", "stars", "ocean", "city lights",
-                "data visualization", "laboratory", "innovation",
-                "futuristic", "education"
-            ]
+            kw = ["technology", "science", "space", "nature", "abstract",
+                  "computer", "earth", "stars", "ocean", "city", "data",
+                  "laboratory", "innovation", "futuristic", "education"]
 
-        logger.info(f"   ✅ {len(keywords)} footage keywords")
-        return keywords
+        logger.info(f"   ✅ {len(kw)} keywords")
+        return kw
 
     def parse_script_sections(self, script):
-        logger.info(f"🧠 Parsing script sections...")
-
+        logger.info(f"🧠 Parsing sections...")
         sections = []
-        current_section = None
-        current_text = []
+        current = None
+        text_lines = []
 
         for line in script.split('\n'):
             line = line.strip()
-            section_match = re.match(
-                r'\[(HOOK|SECTION_\d+|CTA)(?::\s*(.+?))?\]', line
-            )
-            if section_match:
-                if current_section is not None:
+            m = re.match(r'\[(HOOK|SECTION_\d+|CTA)(?::\s*(.+?))?\]', line)
+            if m:
+                if current:
                     sections.append({
-                        'marker': current_section['marker'],
-                        'title': current_section['title'],
-                        'text': '\n'.join(current_text).strip(),
-                        'is_short_candidate': current_section['marker'] not in ['CTA']
+                        'marker': current['marker'], 'title': current['title'],
+                        'text': '\n'.join(text_lines).strip(),
+                        'is_short_candidate': current['marker'] != 'CTA'
                     })
-                current_section = {
-                    'marker': section_match.group(1),
-                    'title': section_match.group(2) or section_match.group(1)
-                }
-                current_text = []
+                current = {'marker': m.group(1), 'title': m.group(2) or m.group(1)}
+                text_lines = []
             elif line and not line.startswith('[VISUAL'):
-                current_text.append(line)
+                text_lines.append(line)
 
-        if current_section and current_text:
+        if current and text_lines:
             sections.append({
-                'marker': current_section['marker'],
-                'title': current_section['title'],
-                'text': '\n'.join(current_text).strip(),
-                'is_short_candidate': current_section['marker'] not in ['CTA']
+                'marker': current['marker'], 'title': current['title'],
+                'text': '\n'.join(text_lines).strip(),
+                'is_short_candidate': current['marker'] != 'CTA'
             })
 
         if not sections:
-            logger.warning("   ⚠️ No section markers found, splitting by paragraphs")
             paragraphs = [p.strip() for p in script.split('\n\n') if p.strip()]
             if len(paragraphs) >= 4:
                 sections = [
-                    {'marker': 'HOOK', 'title': 'Hook',
-                     'text': paragraphs[0], 'is_short_candidate': True},
-                    {'marker': 'SECTION_1', 'title': 'Part 1',
-                     'text': '\n'.join(paragraphs[1:3]), 'is_short_candidate': True},
-                    {'marker': 'SECTION_2', 'title': 'Part 2',
-                     'text': '\n'.join(paragraphs[3:5]) if len(paragraphs) > 4 else paragraphs[3],
-                     'is_short_candidate': True},
-                    {'marker': 'CTA', 'title': 'Ending',
-                     'text': paragraphs[-1], 'is_short_candidate': False},
+                    {'marker': 'HOOK', 'title': 'Hook', 'text': paragraphs[0], 'is_short_candidate': True},
+                    {'marker': 'SECTION_1', 'title': 'Part 1', 'text': '\n'.join(paragraphs[1:3]), 'is_short_candidate': True},
+                    {'marker': 'SECTION_2', 'title': 'Part 2', 'text': paragraphs[3] if len(paragraphs) > 3 else '', 'is_short_candidate': True},
+                    {'marker': 'CTA', 'title': 'Ending', 'text': paragraphs[-1], 'is_short_candidate': False},
                 ]
             else:
-                sections = [
-                    {'marker': 'HOOK', 'title': 'Content',
-                     'text': script, 'is_short_candidate': True}
-                ]
+                sections = [{'marker': 'HOOK', 'title': 'Content', 'text': script, 'is_short_candidate': True}]
 
-        logger.info(f"   ✅ Found {len(sections)} sections:")
+        logger.info(f"   ✅ {len(sections)} sections:")
         for s in sections:
-            wc = len(s['text'].split())
-            logger.info(f"      [{s['marker']}] {s['title'][:30]} — {wc} words")
-
+            logger.info(f"      [{s['marker']}] {s['title'][:30]} — {len(s['text'].split())} words")
         return sections
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    brain = GeminiBrain()
-    topics = brain.generate_topics("space and science", "telugu", count=2)
-    print(json.dumps(topics, indent=2, ensure_ascii=False))
