@@ -1,32 +1,21 @@
-name: 🎬 YouTube Automation
+name: YouTube Automation
 
 on:
-  # Scheduled runs (UTC times — adjust for IST)
   schedule:
-    # Telugu: 3:30 UTC = 9:00 IST, 11:30 UTC = 17:00 IST
     - cron: '30 3 * * *'
     - cron: '30 11 * * *'
-  
-  # Manual trigger
   workflow_dispatch:
     inputs:
       language:
         description: 'Language to process'
         required: true
-        default: 'all'
+        default: 'telugu'
         type: choice
         options:
           - all
           - telugu
           - hindi
-      
-      test_mode:
-        description: 'Test mode (skip upload)'
-        required: false
-        default: false
-        type: boolean
 
-# Prevent concurrent runs
 concurrency:
   group: youtube-automation
   cancel-in-progress: false
@@ -35,156 +24,220 @@ jobs:
   create-and-upload:
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    
+
     steps:
-      # ──────────────────────────────────────
-      # SETUP
-      # ──────────────────────────────────────
-      
-      - name: 📥 Checkout code
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 🐍 Setup Python 3.11
+      - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          cache: 'pip'
 
-      - name: 📦 Install system dependencies
+      - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg libgl1-mesa-glx
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg libgl1-mesa-glx > /dev/null 2>&1
+          echo "FFmpeg version:"
+          ffmpeg -version | head -1
 
-      - name: 📦 Install Python dependencies
+      - name: Install Python dependencies
         run: |
           pip install --upgrade pip
           pip install -r requirements.txt
+          echo "All Python packages installed successfully"
 
-      - name: 🌐 Install Playwright browser
-        run: python -m playwright install chromium
+      - name: Install Playwright browser
+        run: |
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
+          echo "Playwright chromium installed"
 
-      - name: 📁 Create directories
+      - name: Create directories
         run: |
           mkdir -p config/cookies
-          mkdir -p assets/fonts assets/music
+          mkdir -p assets/fonts assets/music assets/sounds assets/overlays
           mkdir -p output/logs/screenshots
+          echo "All directories created"
 
-      # ──────────────────────────────────────
-      # RESTORE SECRETS
-      # ──────────────────────────────────────
-      
-      - name: 🔑 Restore API keys and cookies
-        run: |
-          # Write cookie files from secrets
-          echo '${{ secrets.TELUGU_COOKIES }}' > config/cookies/telugu_channel.json
-          echo '${{ secrets.HINDI_COOKIES }}' > config/cookies/hindi_channel.json
-          
-          # Verify cookies exist and are valid JSON
-          echo "Verifying Telugu cookies..."
-          python -c "import json; json.load(open('config/cookies/telugu_channel.json'))" && echo "✅ Telugu cookies valid" || echo "❌ Telugu cookies invalid"
-          
-          echo "Verifying Hindi cookies..."
-          python -c "import json; json.load(open('config/cookies/hindi_channel.json'))" && echo "✅ Hindi cookies valid" || echo "❌ Hindi cookies invalid"
+      - name: Setup API keys and cookies
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           TELUGU_COOKIES: ${{ secrets.TELUGU_COOKIES }}
           HINDI_COOKIES: ${{ secrets.HINDI_COOKIES }}
-
-      - name: 📝 Update config with API keys
         run: |
-          # Create a Python script to update config
-          python -c "
-          import yaml
-          with open('config/config.yaml', 'r') as f:
-              config = yaml.safe_load(f)
-          config['gemini']['api_key'] = '${{ secrets.GEMINI_API_KEY }}'
-          config['footage']['pexels_api_key'] = '${{ secrets.PEXELS_API_KEY }}'
-          with open('config/config.yaml', 'w') as f:
-              yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-          print('✅ Config updated with API keys')
-          "
+          echo "Writing cookie files..."
 
-      - name: 🔍 Download fonts if missing
+          if [ -n "$TELUGU_COOKIES" ]; then
+            echo "$TELUGU_COOKIES" > config/cookies/telugu_channel.json
+            echo "Telugu cookies written: $(wc -c < config/cookies/telugu_channel.json) bytes"
+          else
+            echo "WARNING: TELUGU_COOKIES secret is empty"
+          fi
+
+          if [ -n "$HINDI_COOKIES" ]; then
+            echo "$HINDI_COOKIES" > config/cookies/hindi_channel.json
+            echo "Hindi cookies written: $(wc -c < config/cookies/hindi_channel.json) bytes"
+          else
+            echo "WARNING: HINDI_COOKIES secret is empty"
+          fi
+
+          echo "Updating config with API keys..."
+          python3 << 'PYEOF'
+          import yaml
+          import os
+
+          config_path = "config/config.yaml"
+          if not os.path.exists(config_path):
+              print(f"ERROR: {config_path} not found!")
+              exit(1)
+
+          with open(config_path, 'r') as f:
+              config = yaml.safe_load(f)
+
+          gemini_key = os.environ.get('GEMINI_API_KEY', '')
+          pexels_key = os.environ.get('PEXELS_API_KEY', '')
+
+          config['gemini']['api_key'] = gemini_key
+          config['footage']['pexels_api_key'] = pexels_key
+
+          with open(config_path, 'w') as f:
+              yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+
+          print(f"Gemini key: {'SET' if gemini_key else 'MISSING'}")
+          print(f"Pexels key: {'SET' if pexels_key else 'MISSING'}")
+          print("Config updated successfully")
+          PYEOF
+
+      - name: Download fonts
         run: |
           cd assets/fonts
-          
+
           if [ ! -f "NotoSansTelugu-Bold.ttf" ]; then
             echo "Downloading Telugu font..."
-            wget -q "https://github.com/google/fonts/raw/main/ofl/notosanstelugu/NotoSansTelugu%5Bwdth%2Cwght%5D.ttf" -O NotoSansTelugu-Bold.ttf || echo "Font download failed"
+            wget -q "https://github.com/google/fonts/raw/main/ofl/notosanstelugu/NotoSansTelugu%5Bwdth%2Cwght%5D.ttf" \
+              -O NotoSansTelugu-Bold.ttf 2>/dev/null || echo "Telugu font download failed"
           fi
-          
+
           if [ ! -f "NotoSansDevanagari-Bold.ttf" ]; then
             echo "Downloading Hindi font..."
-            wget -q "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf" -O NotoSansDevanagari-Bold.ttf || echo "Font download failed"
+            wget -q "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf" \
+              -O NotoSansDevanagari-Bold.ttf 2>/dev/null || echo "Hindi font download failed"
           fi
-          
+
+          echo "Fonts in directory:"
           ls -la
 
-      # ──────────────────────────────────────
-      # DOWNLOAD FREE BACKGROUND MUSIC
-      # ──────────────────────────────────────
-      
-      - name: 🎵 Download background music
+      - name: Download background music
         run: |
           cd assets/music
-          
           if [ ! -f "bg_ambient.mp3" ]; then
-            echo "Downloading ambient background music..."
-            # Use a free CC0 music source
-            wget -q "https://cdn.pixabay.com/audio/2024/01/04/audio_20a1f1c0e0.mp3" -O bg_ambient.mp3 2>/dev/null || echo "Music download failed - will continue without background music"
+            echo "Downloading ambient music..."
+            wget -q "https://cdn.pixabay.com/audio/2024/11/08/audio_b5464ccdba.mp3" \
+              -O bg_ambient.mp3 2>/dev/null || {
+              echo "Music download failed - creating silent placeholder"
+              ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 60 -q:a 9 bg_ambient.mp3 2>/dev/null
+            }
           fi
-          
+          echo "Music files:"
           ls -la
 
-      # ──────────────────────────────────────
-      # RUN PIPELINE
-      # ──────────────────────────────────────
-      
-      - name: 🚀 Run YouTube Automation Pipeline
+      - name: Verify setup
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+        run: |
+          echo "========================================="
+          echo "  SETUP VERIFICATION"
+          echo "========================================="
+
+          echo ""
+          echo "Python version:"
+          python --version
+
+          echo ""
+          echo "FFmpeg:"
+          ffmpeg -version | head -1
+
+          echo ""
+          echo "Checking Python packages..."
+          python3 << 'PYEOF'
+          import sys
+          packages = {
+              'google.generativeai': 'Gemini AI',
+              'edge_tts': 'Edge TTS',
+              'moviepy': 'MoviePy',
+              'PIL': 'Pillow',
+              'cv2': 'OpenCV',
+              'playwright': 'Playwright',
+              'yaml': 'PyYAML',
+              'requests': 'Requests',
+              'bs4': 'BeautifulSoup',
+              'numpy': 'NumPy',
+              'scipy': 'SciPy',
+              'pydub': 'PyDub',
+          }
+
+          all_ok = True
+          for module, name in packages.items():
+              try:
+                  __import__(module)
+                  print(f"  OK  {name}")
+              except ImportError:
+                  print(f"  FAIL  {name}")
+                  all_ok = False
+
+          if not all_ok:
+              print("\nSome packages missing!")
+              sys.exit(1)
+
+          print("\nAll packages OK!")
+          PYEOF
+
+          echo ""
+          echo "Checking files..."
+          echo "  Config: $(test -f config/config.yaml && echo 'OK' || echo 'MISSING')"
+          echo "  Telugu cookies: $(test -f config/cookies/telugu_channel.json && echo 'OK' || echo 'MISSING')"
+          echo "  Hindi cookies: $(test -f config/cookies/hindi_channel.json && echo 'OK' || echo 'MISSING')"
+          echo "  main.py: $(test -f main.py && echo 'OK' || echo 'MISSING')"
+
+          echo ""
+          echo "Checking src modules..."
+          for f in src/__init__.py src/gemini_brain.py src/trend_finder.py src/breathing.py src/voice_maker.py src/video_animator.py src/shorts_cutter.py src/thumbnail_maker.py src/uploader.py; do
+            echo "  $f: $(test -f $f && echo 'OK' || echo 'MISSING')"
+          done
+
+          echo ""
+          echo "Checking API keys..."
+          echo "  GEMINI_API_KEY: $(test -n '${{ secrets.GEMINI_API_KEY }}' && echo 'SET' || echo 'NOT SET')"
+          echo "  PEXELS_API_KEY: $(test -n '${{ secrets.PEXELS_API_KEY }}' && echo 'SET' || echo 'NOT SET')"
+
+          echo ""
+          echo "========================================="
+          echo "  SETUP VERIFICATION COMPLETE"
+          echo "========================================="
+
+      - name: Run Pipeline
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           GITHUB_ACTIONS: 'true'
         run: |
-          LANGUAGE="${{ github.event.inputs.language || 'all' }}"
-          
-          echo "═══════════════════════════════════════════════"
-          echo "  🤖 YouTube Automation Pipeline"
-          echo "  Language: $LANGUAGE"
+          LANGUAGE="${{ github.event.inputs.language || 'telugu' }}"
+
+          echo "========================================="
+          echo "  STARTING PIPELINE: $LANGUAGE"
           echo "  Time: $(date)"
-          echo "═══════════════════════════════════════════════"
-          
+          echo "========================================="
+
           python main.py --language "$LANGUAGE"
 
-      # ──────────────────────────────────────
-      # SAVE ARTIFACTS
-      # ──────────────────────────────────────
-      
-      - name: 📊 Save pipeline logs
+      - name: Save logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: pipeline-logs-${{ github.run_number }}
-          path: |
-            output/logs/
+          name: logs-${{ github.run_number }}
+          path: output/
           retention-days: 7
-
-      - name: 📸 Save debug screenshots
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: debug-screenshots-${{ github.run_number }}
-          path: output/logs/screenshots/
-          retention-days: 3
-
-      # ──────────────────────────────────────
-      # UPDATE COOKIES (if they were refreshed)
-      # ──────────────────────────────────────
-      
-      - name: 🍪 Check if cookies were refreshed
-        if: always()
-        run: |
-          echo "Cookies may have been refreshed during upload."
-          echo "If uploads start failing, re-extract cookies locally:"
-          echo "  python -m src.cookie_extractor --channel telugu"
-          echo "  python -m src.cookie_extractor --channel hindi"
-          echo "Then update the GitHub secrets."
+          if-no-files-found: warn
