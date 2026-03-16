@@ -1,89 +1,148 @@
-# ════════════════════════════════════════════════════════════
-#  YOUTUBE AUTOMATION — MASTER CONFIGURATION
-#  All API keys come from GitHub Secrets (environment variables)
-# ════════════════════════════════════════════════════════════
+# ================================================================
+# YOUTUBE AUTOMATION — MASTER CONFIGURATION
+# ================================================================
+# All API keys should be set via environment variables
+# or GitHub Secrets — never hardcode them here in production
+# ================================================================
 
-# --- AI Engine ---
+# --- Gemini AI Engine ---
 gemini:
+  api_key: "${GEMINI_API_KEY}"
   model: "gemini-2.0-flash"
-  temperature: 0.85
+  review_model: "gemini-2.0-flash"
   max_retries: 3
-  review_min_score: 6
+  retry_delay: 10
+  temperature: 0.85
+  max_output_tokens: 8192
 
-# --- Channels (Two separate YouTube accounts) ---
+# --- Channel Configuration ---
+# Telugu and Hindi are COMPLETELY SEPARATE channels
+# Different Google accounts, different cookies, different content
 channels:
   telugu:
-    name: "Telugu Science & Tech"
+    enabled: true
+    channel_name: "Telugu Science & Tech"
+    google_account: "telugu_channel_account"
     language: "telugu"
-    language_code: "te-IN"
-    native_name: "తెలుగు"
-    script_name: "Telugu"
+    language_code: "te"
+    language_native: "తెలుగు"
     voice_id: "te-IN-ShrutiNeural"
     voice_gender: "female"
-    character_config: "config/characters/telugu_character.yaml"
-    target_audience: "Telugu speaking Indians aged 15-35"
-    cookie_env_var: "TELUGU_COOKIES"
+    voice_style: "cheerful"
+    font_file: "assets/fonts/NotoSansTelugu-Bold.ttf"
+    cookie_file: "config/cookies/telugu_channel.json"
+    # Upload schedule (IST)
+    schedule:
+      long_form_times: ["09:00", "17:00"]
+      shorts_gap_minutes: 90  # Gap between shorts uploads
+    # Content preferences
+    preferred_niches:
+      - "technology and AI"
+      - "space and science"
+      - "amazing facts"
+      - "Indian history and mythology"
+      - "health and fitness"
+    # Anime character style
+    character:
+      style: "female_anime_teacher"
+      hair_color: [30, 30, 80]      # Dark blue
+      eye_color: [100, 50, 200]      # Purple
+      outfit_color: [200, 50, 50]    # Red
 
   hindi:
-    name: "Hindi Science & Tech"
+    enabled: true
+    channel_name: "Hindi Science & Tech"
+    google_account: "hindi_channel_account"
     language: "hindi"
-    language_code: "hi-IN"
-    native_name: "हिंदी"
-    script_name: "Devanagari"
+    language_code: "hi"
+    language_native: "हिंदी"
     voice_id: "hi-IN-SwaraNeural"
     voice_gender: "female"
-    character_config: "config/characters/hindi_character.yaml"
-    target_audience: "Hindi speaking Indians aged 15-35"
-    cookie_env_var: "HINDI_COOKIES"
+    voice_style: "cheerful"
+    font_file: "assets/fonts/NotoSansDevanagari-Bold.ttf"
+    cookie_file: "config/cookies/hindi_channel.json"
+    schedule:
+      long_form_times: ["08:00", "16:00"]
+      shorts_gap_minutes: 90
+    preferred_niches:
+      - "technology and AI"
+      - "space and science"
+      - "amazing facts"
+      - "personal finance India"
+      - "government schemes"
+    character:
+      style: "male_anime_presenter"
+      hair_color: [20, 20, 20]       # Black
+      eye_color: [50, 100, 200]       # Blue
+      outfit_color: [50, 50, 150]     # Navy
 
 # --- Content Settings ---
 content:
-  niches:
-    - "artificial intelligence and future technology"
-    - "space science and astronomy"
-    - "Indian history and mythology"
-    - "personal finance tips for Indians"
-    - "amazing science facts"
-    - "psychology and human behavior"
-    - "health and nutrition science"
-    
   long_form:
     target_words: 1500
-    target_duration_minutes: 10
-    resolution: [1920, 1080]
+    min_words: 1200
+    max_words: 2000
+    resolution_w: 1920
+    resolution_h: 1080
     fps: 30
+    bitrate: "5000k"
     
   shorts:
     max_duration_seconds: 58
     min_duration_seconds: 25
-    resolution: [1080, 1920]
+    resolution_w: 1080
+    resolution_h: 1920
     fps: 30
-    per_long_video: 5
-
-# --- Anime Character Generation ---
-anime:
-  model: "cagliostrolab/animagine-xl-3.1"
-  fallback_model: "stabilityai/stable-diffusion-xl-base-1.0"
-  images_per_video: 18
-  image_size: 1024
-  animation:
-    breathing_speed: 0.3        # breathing cycle speed
-    head_bob_amount: 8          # pixels of head movement
-    blink_interval: 4.0         # seconds between blinks
-    expression_change_interval: 6.0  # seconds between expression changes
+    bitrate: "4000k"
+    shorts_per_long_video: 5
     
+  animation:
+    style: "anime"
+    bg_change_interval: 5        # seconds between background changes
+    character_blink_interval: 4  # seconds between blinks
+    mouth_sync: true
+    particle_effects: true
+    transition_style: "anime_swipe"  # anime_swipe, fade, zoom
+    color_palette: "vibrant"
+
+# --- Stock Footage ---
+footage:
+  pexels_api_key: "${PEXELS_API_KEY}"
+  clips_per_video: 15
+  preferred_quality: "hd"       # hd or sd
+  cache_clips: true
+  cache_dir: "assets/footage_cache"
+
 # --- Voice Settings ---
 voice:
-  breathing_pause_ms: 400
-  sentence_pause_ms: 600
-  section_pause_ms: 1000
-  emphasis_rate_boost: "+15%"
-  excitement_pitch: "+10Hz"
-  sad_pitch: "-8Hz"
-  whisper_volume: "-30%"
-  loud_volume: "+20%"
+  breathing:
+    enabled: true
+    short_breath_ms: 300        # Short breath pause
+    long_breath_ms: 600         # Long breath between paragraphs
+    sentence_pause_ms: 400      # Pause between sentences
+    comma_pause_ms: 200         # Pause at commas
+    emphasis_slowdown: "15%"    # Slow down for emphasis
+  emotions:
+    enabled: true
+    detect_from_script: true    # AI detects emotional sections
+    available_emotions:
+      - "cheerful"
+      - "sad"
+      - "excited"
+      - "serious"
+      - "angry"
+      - "whisper"
 
 # --- Output ---
 output:
   base_dir: "output"
-  keep_temp: false
+  log_dir: "output/logs"
+  keep_temp_files: false
+  max_output_age_days: 7       # Auto-delete old outputs
+
+# --- GitHub Actions ---
+github:
+  detailed_logging: true
+  step_emojis: true
+  save_artifacts: true
+  max_retries_on_failure: 2
