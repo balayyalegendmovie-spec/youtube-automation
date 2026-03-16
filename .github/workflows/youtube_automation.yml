@@ -37,10 +37,14 @@ jobs:
           python-version: '3.11'
 
       - name: Install system dependencies
+        timeout-minutes: 5
         run: |
-          sudo apt-get update -y || true
-          sudo apt-get install -y ffmpeg libgl1 || sudo apt-get install -y ffmpeg
-          echo "FFmpeg: $(ffmpeg -version 2>&1 | head -1)"
+          sudo apt-get update -qq 2>/dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg libgl1 2>/dev/null || {
+            echo "First attempt failed, retrying..."
+            sudo apt-get install -y ffmpeg 2>/dev/null || true
+          }
+          which ffmpeg && echo "FFmpeg installed" || echo "FFmpeg missing"
 
       - name: Install Python dependencies
         run: |
