@@ -1,1 +1,92 @@
+name: 🇮🇳 Telugu Morning Upload
 
+on:
+  schedule:
+    - cron: '30 3 * * *'    # 09:00 IST daily
+  workflow_dispatch:         # Manual trigger
+
+jobs:
+  create-and-upload:
+    name: 🎬 Telugu Content Pipeline
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    steps:
+      # ─── Setup ───
+      - name: 📥 Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      - name: 📦 Install system dependencies
+        run: |
+          echo "::group::Installing FFmpeg and system packages"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ffmpeg fonts-noto
+          ffmpeg -version | head -1
+          echo "::endgroup::"
+      
+      - name: 📦 Install Python dependencies
+        run: |
+          echo "::group::Installing Python packages"
+          pip install --upgrade pip
+          pip install -r requirements.txt
+          echo "::endgroup::"
+      
+      - name: 🌐 Install Playwright browser
+        run: |
+          echo "::group::Installing Chromium for uploads"
+          python -m playwright install chromium
+          python -m playwright install-deps chromium
+          echo "::endgroup::"
+      
+      - name: 📁 Create directories
+        run: |
+          mkdir -p output/logs output/debug
+          mkdir -p assets/music assets/fonts
+          mkdir -p config/characters
+      
+      # ─── Download Assets ───
+      - name: 🎵 Setup assets
+        run: |
+          echo "::group::Downloading fonts"
+          # Download Noto Sans Telugu font
+          wget -q -O assets/fonts/NotoSansTelugu-Bold.ttf \
+            "https://github.com/google/fonts/raw/main/ofl/notosanstelugu/NotoSansTelugu%5Bwdth%2Cwght%5D.ttf" \
+            || echo "Font download failed — using system fonts"
+          echo "::endgroup::"
+      
+      # ─── Run Pipeline ───
+      - name: 🚀 Run Telugu Pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          HF_API_TOKEN: ${{ secrets.HF_API_TOKEN }}
+          TELUGU_COOKIES: ${{ secrets.TELUGU_COOKIES }}
+        run: |
+          python main.py --language telugu
+      
+      # ─── Save Artifacts ───
+      - name: 📊 Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telugu-morning-logs-${{ github.run_number }}
+          path: |
+            output/logs/
+            output/debug/
+          retention-days: 7
+      
+      - name: 📊 Upload pipeline results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telugu-morning-results-${{ github.run_number }}
+          path: |
+            output/telugu_*/script_final.txt
+            output/telugu_*/thumbnail_long.jpg
+          retention-days: 3
