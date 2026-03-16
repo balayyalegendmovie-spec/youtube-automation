@@ -358,43 +358,55 @@ EMOTIONS:
 - CTA: {emotions_map.get('cta', 'warm')}
 """
 
-        prompt = f"""Write a complete YouTube video script in {language} ({lang_name}).
+        prompt = f"""Write a COMPLETE and DETAILED YouTube video script in {language} ({lang_name}).
 
 TOPIC: "{topic}" / "{topic_local}"
 
 {emotion_instructions}
 
-REQUIREMENTS:
+CRITICAL — LENGTH REQUIREMENT:
+You MUST write AT LEAST {target_words} words. This is a 10-MINUTE video.
+Current target: {target_words} words MINIMUM.
+If your script is under {target_words} words, it will be REJECTED.
+Each section should be 150-250 words.
+Count your words carefully.
 
-1. Write ENTIRELY in {language} using {script_type} script
-   Natural conversational style. A 15-year-old should understand.
-   Mix common English tech terms naturally.
+WRITE IN: {language} using {script_type} script only.
+Style: Natural, conversational, like talking to a friend.
+Mix common English technical terms naturally.
 
-2. LENGTH: {target_words} words (about 10 minutes spoken)
-
-3. STRUCTURE with these EXACT markers:
+STRUCTURE — Use these EXACT markers:
 
 [HOOK]
-(30-45 seconds — shocking fact or question — create curiosity)
+Write 100-150 words here. Start with a SHOCKING fact. Create curiosity. 
+Ask "మీకు తెలుసా?" or "क्या आपको पता है?" style questions.
 
 [SECTION_1: Title in {language}]
-(90-120 seconds — first main point with examples)
+Write 200-250 words. First main point. Real examples.
+Reference something Indian audience relates to.
+End with a teaser for next section.
 
 [SECTION_2: Title in {language}]
-(90-120 seconds — deeper dive with surprising twist)
+Write 200-250 words. Go deeper. Include surprising twist.
+Use comparisons. Must work as standalone short.
 
 [SECTION_3: Title in {language}]
-(90-120 seconds — human/emotional angle for India)
+Write 200-250 words. Human/emotional angle.
+How does this affect people in India?
 
 [SECTION_4: Title in {language}]
-(90-120 seconds — CLIMAX — most mind-blowing fact)
+Write 200-250 words. CLIMAX — most mind-blowing revelation.
+Save the BEST fact for this section.
 
 [CTA]
-(30-45 seconds — summary + subscribe call)
+Write 100-150 words. Summary + subscribe call.
+Tease next video. End with memorable line.
 
-4. Add [VISUAL: description] tags for footage hints
-5. Use rhetorical questions every 2-3 sentences
-6. Include specific numbers and Indian references
+Add [VISUAL: description] tags (2-3 per section).
+Use rhetorical questions every 2-3 sentences.
+Include at least 5 specific numbers/statistics.
+
+REMEMBER: MINIMUM {target_words} WORDS TOTAL. This is very important.
 
 Return ONLY the script text."""
 
