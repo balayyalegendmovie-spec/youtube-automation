@@ -1,1 +1,49 @@
+# ════════════════════════════════════════════
+#  ANIME CHARACTER — TELUGU CHANNEL
+#  This defines the recurring host character
+# ════════════════════════════════════════════
 
+name: "Keerthi"
+description: "A young Indian woman anime character with a friendly face"
+
+# Base prompt used for ALL image generation (character consistency)
+base_prompt: >
+  1girl, solo, anime style, young Indian woman, 
+  dark brown eyes, long black hair with slight wave,
+  wearing a modern blue kurta top with gold embroidery,
+  warm brown skin tone, friendly expression,
+  upper body portrait, clean background,
+  high quality, detailed anime art style,
+  soft lighting, studio ghibli inspired,
+  masterpiece, best quality
+
+# Negative prompt (things to avoid)
+negative_prompt: >
+  nsfw, nude, ugly, deformed, bad anatomy, 
+  bad hands, extra fingers, blurry, low quality,
+  watermark, text, signature, western cartoon style,
+  3d render, realistic photo
+
+# Expression variants (appended to base prompt)
+expressions:
+  neutral: "neutral calm expression, slight smile"
+  happy: "big warm smile, happy eyes, cheerful"
+  excited: "excited expression, wide eyes, open mouth smile, energetic pose"
+  serious: "serious focused expression, determined eyes"
+  thinking: "thinking pose, hand on chin, curious expression, looking up"
+  surprised: "surprised expression, wide open eyes, open mouth, amazed"
+  sad: "slightly sad expression, gentle eyes, soft frown"
+  explaining: "explaining gesture, one hand raised, teaching pose, confident"
+
+# Background scenes (rotated per section)
+backgrounds:
+  technology: "futuristic tech laboratory background, holographic screens, blue glow"
+  space: "outer space background, stars, nebula, planets visible"
+  history: "ancient Indian temple background, warm golden light"
+  science: "modern science lab background, beakers, equations on board"
+  nature: "beautiful Indian landscape background, mountains, rivers"
+  finance: "modern office background, stock charts, golden coins"
+  default: "clean gradient background, soft purple and blue tones"
+
+# Seed for consistency (same seed = similar output)
+seed: 42
