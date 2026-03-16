@@ -1,0 +1,97 @@
+name: Video Quality Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      language:
+        description: 'Language'
+        required: true
+        default: 'telugu'
+        type: choice
+        options:
+          - telugu
+          - hindi
+
+concurrency:
+  group: video-builder
+  cancel-in-progress: false
+
+jobs:
+  build-video:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        timeout-minutes: 5
+        run: |
+          sudo apt-get update -qq 2>/dev/null
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq ffmpeg libgl1 2>/dev/null
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Setup
+        run: |
+          mkdir -p config/cookies assets/fonts assets/music output/logs/screenshots
+          echo '{"cookies":[]}' > config/cookies/telugu_channel.json
+          echo '{"cookies":[]}' > config/cookies/hindi_channel.json
+
+          cd assets/fonts
+          [ ! -f "NotoSansTelugu-Bold.ttf" ] && wget -q "https://github.com/google/fonts/raw/main/ofl/notosanstelugu/NotoSansTelugu%5Bwdth%2Cwght%5D.ttf" -O NotoSansTelugu-Bold.ttf 2>/dev/null || true
+          [ ! -f "NotoSansDevanagari-Bold.ttf" ] && wget -q "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf" -O NotoSansDevanagari-Bold.ttf 2>/dev/null || true
+          cd ../music
+          [ ! -f "bg_ambient.mp3" ] && ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 120 -b:a 128k -f mp3 bg_ambient.mp3 2>/dev/null || true
+
+          python3 << 'PYEOF'
+          import yaml, os
+          with open('config/config.yaml', 'r') as f:
+              config = yaml.safe_load(f)
+          config['gemini']['api_key'] = os.environ.get('GEMINI_API_KEY', '')
+          config['footage']['pexels_api_key'] = os.environ.get('PEXELS_API_KEY', '')
+          with open('config/config.yaml', 'w') as f:
+              yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+          PYEOF
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+
+      - name: Build Video and Upload to Drive
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+          GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
+          GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
+          GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_ACTIONS: 'true'
+        run: |
+          LANGUAGE="${{ github.event.inputs.language }}"
+          echo "========================================="
+          echo "  VIDEO QUALITY BUILDER"
+          echo "  Language: $LANGUAGE"
+          echo "  Time: $(date)"
+          echo "  Mode: Video + Drive (no YouTube upload)"
+          echo "========================================="
+          python video_builder.py --language "$LANGUAGE"
+
+      - name: Save output
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: video-${{ github.run_number }}
+          path: output/
+          retention-days: 7
+          if-no-files-found: warn
