@@ -152,33 +152,41 @@ class GeminiBrain:
         import yaml
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-        
+
         # Get API keys
         self.gemini_key = os.environ.get(
             'GEMINI_API_KEY',
             self.config.get('gemini', {}).get('api_key', '')
         )
         self.groq_key = os.environ.get('GROQ_API_KEY', '')
-        
-        # Clean up placeholder values
+        self.groq_key_2 = os.environ.get('GROQ_API_KEY_2', '')
+
+        # Clean placeholders
         if '${' in str(self.gemini_key):
             self.gemini_key = os.environ.get('GEMINI_API_KEY', '')
         if '${' in str(self.groq_key):
             self.groq_key = os.environ.get('GROQ_API_KEY', '')
-        
-        # Build provider list (order matters — tried first to last)
+        if '${' in str(self.groq_key_2):
+            self.groq_key_2 = os.environ.get('GROQ_API_KEY_2', '')
+
+        # Build providers (order = priority)
         self.providers = []
-        
+
         if self.gemini_key:
             self.providers.append(
                 GeminiProvider(self.gemini_key, "gemini-2.0-flash-lite")
             )
-        
+
         if self.groq_key:
             self.providers.append(
                 GroqProvider(self.groq_key, "llama-3.3-70b-versatile")
             )
-        
+
+        if self.groq_key_2:
+            self.providers.append(
+                GroqProvider(self.groq_key_2, "llama-3.1-70b-versatile")
+            )
+
         if self.gemini_key:
             self.providers.append(
                 GeminiProvider(self.gemini_key, "gemini-1.5-flash")
@@ -186,12 +194,16 @@ class GeminiBrain:
             self.providers.append(
                 GeminiProvider(self.gemini_key, "gemini-2.0-flash")
             )
-        
-        if not self.providers:
-            raise Exception(
-                "No AI API keys configured! Set GEMINI_API_KEY or GROQ_API_KEY"
+
+        if self.groq_key:
+            # Groq also has other free models as fallback
+            self.providers.append(
+                GroqProvider(self.groq_key, "llama-3.1-8b-instant")
             )
-        
+
+        if not self.providers:
+            raise Exception("No AI API keys! Set GEMINI_API_KEY or GROQ_API_KEY")
+
         logger.info("🧠 AI Brain initialized with providers:")
         for p in self.providers:
             status = "READY" if p.available else "NO KEY"
