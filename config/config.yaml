@@ -8,12 +8,16 @@
 # --- Gemini AI Engine ---
 gemini:
   api_key: "${GEMINI_API_KEY}"
-  model: "gemini-2.0-flash"
-  review_model: "gemini-2.0-flash"
+  model: "gemini-2.0-flash-lite"
+  review_model: "gemini-2.0-flash-lite"
   max_retries: 3
   retry_delay: 10
   temperature: 0.85
   max_output_tokens: 8192
+
+groq:
+  api_key: "${GROQ_API_KEY}"
+  model: "llama-3.3-70b-versatile"
 
 # --- Channel Configuration ---
 # Telugu and Hindi are COMPLETELY SEPARATE channels
