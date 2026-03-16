@@ -1,40 +1,15 @@
-
----
-
-## 📦 requirements.txt
-
-```txt
-# ============================================
-# YOUTUBE AUTOMATION — DEPENDENCIES
-# ============================================
-
-# --- AI ---
 google-generativeai>=0.8.0
-
-# --- Text-to-Speech ---
 edge-tts>=6.1.9
-
-# --- Video Processing ---
 moviepy>=1.0.3
 Pillow>=10.4.0
 numpy>=1.24.0
 opencv-python-headless>=4.9.0
 scipy>=1.12.0
-
-# --- Web Scraping & Trends ---
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 lxml>=5.1.0
-
-# --- Browser Automation ---
 playwright>=1.44.0
-
-# --- Scheduling ---
 schedule>=1.2.0
-
-# --- Config & Utils ---
 pyyaml>=6.0.1
 aiofiles>=23.2.0
-
-# --- Audio Processing ---
 pydub>=0.25.1
