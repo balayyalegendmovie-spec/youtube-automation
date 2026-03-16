@@ -1,1 +1,89 @@
+# ════════════════════════════════════════════════════════════
+#  YOUTUBE AUTOMATION — MASTER CONFIGURATION
+#  All API keys come from GitHub Secrets (environment variables)
+# ════════════════════════════════════════════════════════════
 
+# --- AI Engine ---
+gemini:
+  model: "gemini-2.0-flash"
+  temperature: 0.85
+  max_retries: 3
+  review_min_score: 6
+
+# --- Channels (Two separate YouTube accounts) ---
+channels:
+  telugu:
+    name: "Telugu Science & Tech"
+    language: "telugu"
+    language_code: "te-IN"
+    native_name: "తెలుగు"
+    script_name: "Telugu"
+    voice_id: "te-IN-ShrutiNeural"
+    voice_gender: "female"
+    character_config: "config/characters/telugu_character.yaml"
+    target_audience: "Telugu speaking Indians aged 15-35"
+    cookie_env_var: "TELUGU_COOKIES"
+
+  hindi:
+    name: "Hindi Science & Tech"
+    language: "hindi"
+    language_code: "hi-IN"
+    native_name: "हिंदी"
+    script_name: "Devanagari"
+    voice_id: "hi-IN-SwaraNeural"
+    voice_gender: "female"
+    character_config: "config/characters/hindi_character.yaml"
+    target_audience: "Hindi speaking Indians aged 15-35"
+    cookie_env_var: "HINDI_COOKIES"
+
+# --- Content Settings ---
+content:
+  niches:
+    - "artificial intelligence and future technology"
+    - "space science and astronomy"
+    - "Indian history and mythology"
+    - "personal finance tips for Indians"
+    - "amazing science facts"
+    - "psychology and human behavior"
+    - "health and nutrition science"
+    
+  long_form:
+    target_words: 1500
+    target_duration_minutes: 10
+    resolution: [1920, 1080]
+    fps: 30
+    
+  shorts:
+    max_duration_seconds: 58
+    min_duration_seconds: 25
+    resolution: [1080, 1920]
+    fps: 30
+    per_long_video: 5
+
+# --- Anime Character Generation ---
+anime:
+  model: "cagliostrolab/animagine-xl-3.1"
+  fallback_model: "stabilityai/stable-diffusion-xl-base-1.0"
+  images_per_video: 18
+  image_size: 1024
+  animation:
+    breathing_speed: 0.3        # breathing cycle speed
+    head_bob_amount: 8          # pixels of head movement
+    blink_interval: 4.0         # seconds between blinks
+    expression_change_interval: 6.0  # seconds between expression changes
+    
+# --- Voice Settings ---
+voice:
+  breathing_pause_ms: 400
+  sentence_pause_ms: 600
+  section_pause_ms: 1000
+  emphasis_rate_boost: "+15%"
+  excitement_pitch: "+10Hz"
+  sad_pitch: "-8Hz"
+  whisper_volume: "-30%"
+  loud_volume: "+20%"
+
+# --- Output ---
+output:
+  base_dir: "output"
+  keep_temp: false
