@@ -1,5 +1,5 @@
 """
-YOUTUBE UPLOADER — Direct URL approach with proper waits
+YOUTUBE UPLOADER — Direct URL + JavaScript title/description
 """
 
 import asyncio
@@ -83,218 +83,146 @@ class YouTubeUploader:
         try:
             await self._start_browser()
 
-            # STEP 1: Go to Studio and click CREATE > Upload
-            logger.info(f"   1️⃣ Opening YouTube Studio...")
-            await self.page.goto('https://studio.youtube.com',
-                                wait_until='networkidle', timeout=30000)
+            # Step 1: Go to upload URL directly
+            logger.info(f"   1️⃣ Opening upload page...")
+            await self.page.goto(
+                'https://www.youtube.com/upload',
+                wait_until='domcontentloaded', timeout=30000
+            )
             await asyncio.sleep(5)
 
             if 'accounts.google.com' in self.page.url:
                 raise Exception("Session expired")
 
-            logger.info(f"   ✅ Studio loaded")
-
-            # STEP 2: Use keyboard shortcut or direct navigation
-            # YouTube Studio supports Ctrl+Shift+U or we navigate
-            logger.info(f"   2️⃣ Opening upload dialog...")
-
-            # Method: Click create icon then click upload in popup
-            dialog_opened = False
-
-            # Try clicking the create button with explicit waits
-            try:
-                # Wait for page to fully render
-                await self.page.wait_for_load_state('networkidle')
-                await asyncio.sleep(3)
-
-                # Find and click create button
-                create_btn = await self.page.wait_for_selector(
-                    '#create-icon', timeout=10000
-                )
-                if create_btn:
-                    await create_btn.click()
-                    logger.info(f"   ✅ Create icon clicked")
-                    await asyncio.sleep(3)
-
-                    # Now wait for the menu to appear and click Upload
-                    # The menu items are tp-yt-paper-item elements
-                    menu_item = await self.page.wait_for_selector(
-                        'tp-yt-paper-item', timeout=5000
-                    )
-                    if menu_item:
-                        await menu_item.click()
-                        logger.info(f"   ✅ Upload menu clicked")
-                        dialog_opened = True
-                        await asyncio.sleep(3)
-            except Exception as e:
-                logger.info(f"   ⚠️ Create button method failed: {e}")
-
-            # Fallback: Direct URL
-            if not dialog_opened:
-                logger.info(f"   🔄 Trying direct upload URL...")
-                await self.page.goto(
-                    'https://www.youtube.com/upload',
-                    wait_until='domcontentloaded', timeout=20000
-                )
-                await asyncio.sleep(5)
-
-                # Check if we landed on an upload page
-                url = self.page.url
-                logger.info(f"   Current URL: {url[:80]}")
-
-                if 'upload' in url or 'studio' in url:
-                    dialog_opened = True
-                    logger.info(f"   ✅ Upload page loaded via direct URL")
-
-            # Fallback 2: Studio upload URL
-            if not dialog_opened:
-                logger.info(f"   🔄 Trying studio upload URL...")
+            # If redirected to studio, try direct URL
+            if 'upload' not in self.page.url:
                 await self.page.goto(
                     'https://studio.youtube.com/channel/UC/videos/upload?d=ud',
                     wait_until='domcontentloaded', timeout=20000
                 )
                 await asyncio.sleep(5)
-                dialog_opened = True
-                logger.info(f"   ✅ Studio upload page loaded")
 
-            await self._screenshot("step2_upload_dialog")
+            logger.info(f"   ✅ Page loaded: {self.page.url[:60]}")
 
-            # STEP 3: Set file
-            logger.info(f"   3️⃣ Uploading file...")
-
-            # Find file input (hidden)
+            # Step 2: Set file on hidden input
+            logger.info(f"   2️⃣ Selecting file...")
             file_input = await self.page.wait_for_selector(
                 'input[type="file"]', state='attached', timeout=10000
             )
-
-            if not file_input:
-                # Try locator approach
-                locator = self.page.locator('input[type="file"]')
-                if await locator.count() > 0:
-                    await locator.first.set_input_files(os.path.abspath(video_path))
-                    logger.info(f"   ✅ File set via locator")
-                else:
-                    raise Exception("No file input found")
-            else:
+            if file_input:
                 await file_input.set_input_files(os.path.abspath(video_path))
                 logger.info(f"   ✅ File selected")
+            else:
+                locator = self.page.locator('input[type="file"]')
+                await locator.first.set_input_files(os.path.abspath(video_path))
+                logger.info(f"   ✅ File selected (locator)")
 
-            # STEP 4: VERIFY upload started (critical!)
-            logger.info(f"   4️⃣ Verifying upload started...")
-
-            upload_confirmed = False
-            for i in range(30):  # Wait up to 150 seconds
+            # Step 3: Verify upload started
+            logger.info(f"   3️⃣ Verifying upload...")
+            upload_ok = False
+            for i in range(30):
                 await asyncio.sleep(5)
                 try:
-                    body_text = await self.page.inner_text('body')
-
-                    # Real upload indicators
-                    real_indicators = [
-                        'Add a title that describes',
-                        'Details',
-                        'Uploading',
-                        'Processing',
-                        '% uploaded',
-                        'Video elements',
-                        'Made for kids',
-                    ]
-
-                    for indicator in real_indicators:
-                        if indicator in body_text:
-                            upload_confirmed = True
-                            logger.info(f"   ✅ Upload confirmed: found '{indicator}' ({i*5}s)")
-                            break
-
-                    if upload_confirmed:
+                    body = await self.page.inner_text('body')
+                    if any(w in body for w in ['Add a title', 'Details', 'Uploading',
+                                                'Processing', 'Video elements']):
+                        upload_ok = True
+                        logger.info(f"   ✅ Upload dialog active ({i*5}s)")
                         break
-
-                    # Check percentage
-                    pct = re.search(r'(\d+)\s*%', body_text)
-                    if pct and int(pct.group(1)) > 0:
-                        upload_confirmed = True
-                        logger.info(f"   ✅ Upload progress: {pct.group(0)} ({i*5}s)")
-                        break
-
                 except Exception:
                     pass
-
                 if i > 0 and i % 6 == 0:
-                    logger.info(f"      ⏳ Waiting for upload... ({i*5}s)")
-                    await self._screenshot(f"step4_waiting_{i}")
+                    logger.info(f"      ⏳ Waiting... ({i*5}s)")
 
-            if not upload_confirmed:
-                await self._screenshot("step4_upload_not_confirmed")
-                # Don't raise — try to continue anyway, might still work
-                logger.warning(f"   ⚠️ Could not confirm upload started")
+            if not upload_ok:
+                await self._screenshot("upload_not_started")
+                logger.warning(f"   ⚠️ Upload dialog not confirmed")
 
-            # STEP 5: Set title
-            logger.info(f"   5️⃣ Setting title...")
-            await asyncio.sleep(2)
+            # Step 4: Set title via JavaScript
+            logger.info(f"   4️⃣ Setting title...")
+            await asyncio.sleep(3)
 
-            title_set = False
-            for sel in ['#textbox[aria-label*="title" i]',
-                        '#textbox[aria-label*="Title"]',
-                        '#title-textarea #textbox',
-                        'div#textbox[contenteditable]']:
-                try:
-                    el = await self.page.wait_for_selector(sel, timeout=5000)
-                    if el:
-                        await el.click()
-                        await self.page.keyboard.press('Control+A')
-                        await self.page.keyboard.press('Delete')
-                        await self.page.keyboard.type(title[:100], delay=15)
-                        title_set = True
-                        logger.info(f"   ✅ Title set")
-                        break
-                except Exception:
-                    continue
+            # Escape special characters for JS string
+            safe_title = (title[:100]
+                         .replace('\\', '\\\\')
+                         .replace("'", "\\'")
+                         .replace('"', '\\"')
+                         .replace('\n', ' ')
+                         .replace('\r', ''))
 
-            if not title_set:
-                logger.warning(f"   ⚠️ Title not set")
+            title_set = await self.page.evaluate(f"""
+                () => {{
+                    const boxes = document.querySelectorAll(
+                        '#textbox[contenteditable="true"]'
+                    );
+                    if (boxes.length > 0) {{
+                        const titleBox = boxes[0];
+                        titleBox.focus();
+                        titleBox.textContent = '';
+                        document.execCommand('selectAll', false, null);
+                        document.execCommand('insertText', false, '{safe_title}');
+                        titleBox.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        return true;
+                    }}
+                    return false;
+                }}
+            """)
+            logger.info(f"   {'✅' if title_set else '⚠️'} Title: {title_set}")
 
-            # STEP 6: Description
-            logger.info(f"   6️⃣ Setting description...")
-            try:
-                el = await self.page.wait_for_selector(
-                    '#description-textarea #textbox', timeout=5000
-                )
-                if el:
-                    await el.click()
-                    await el.fill(description[:2000])
-                    logger.info(f"   ✅ Description set")
-            except Exception:
-                logger.warning(f"   ⚠️ Description skipped")
+            # Step 5: Set description
+            logger.info(f"   5️⃣ Setting description...")
+            safe_desc = (description[:500]
+                        .replace('\\', '\\\\')
+                        .replace("'", "\\'")
+                        .replace('"', '\\"')
+                        .replace('\n', '\\n')
+                        .replace('\r', ''))
 
-            # STEP 7: Not for kids
-            logger.info(f"   7️⃣ Setting 'Not for kids'...")
+            desc_set = await self.page.evaluate(f"""
+                () => {{
+                    const boxes = document.querySelectorAll(
+                        '#textbox[contenteditable="true"]'
+                    );
+                    if (boxes.length > 1) {{
+                        const descBox = boxes[1];
+                        descBox.focus();
+                        descBox.textContent = '';
+                        document.execCommand('selectAll', false, null);
+                        document.execCommand('insertText', false, '{safe_desc}');
+                        descBox.dispatchEvent(new Event('input', {{bubbles: true}}));
+                        return true;
+                    }}
+                    return false;
+                }}
+            """)
+            logger.info(f"   {'✅' if desc_set else '⚠️'} Description: {desc_set}")
+
+            # Step 6: Not for kids
+            logger.info(f"   6️⃣ Setting audience...")
             await self.page.evaluate("window.scrollBy(0, 300)")
             await asyncio.sleep(1)
 
-            kids_set = await self.page.evaluate("""
+            kids = await self.page.evaluate("""
                 () => {
                     const radios = document.querySelectorAll('tp-yt-paper-radio-button');
                     for (const r of radios) {
-                        const name = r.getAttribute('name') || '';
-                        const text = (r.textContent || '').toLowerCase();
-                        if (name.includes('NOT_MADE') || name.includes('NOT_MFK') ||
-                            text.includes('no, it') || text.includes('not made for kids')) {
+                        const n = r.getAttribute('name') || '';
+                        const t = (r.textContent || '').toLowerCase();
+                        if (n.includes('NOT_MADE') || n.includes('NOT_MFK') ||
+                            t.includes('no, it') || t.includes('not made for kids')) {
                             r.click(); return true;
                         }
                     }
-                    // Try second radio in audience section
-                    const all = document.querySelectorAll(
-                        '#audience tp-yt-paper-radio-button, ' +
-                        '#made-for-kids-group tp-yt-paper-radio-button'
-                    );
+                    const all = document.querySelectorAll('#audience tp-yt-paper-radio-button');
                     if (all.length >= 2) { all[1].click(); return true; }
                     return false;
                 }
             """)
-            logger.info(f"   {'✅' if kids_set else '⚠️'} Not for kids: {kids_set}")
+            logger.info(f"   {'✅' if kids else '⚠️'} Not for kids: {kids}")
 
-            # STEP 8: Thumbnail
+            # Step 7: Thumbnail
             if thumbnail_path and os.path.exists(thumbnail_path):
-                logger.info(f"   8️⃣ Setting thumbnail...")
+                logger.info(f"   7️⃣ Thumbnail...")
                 try:
                     thumb = self.page.locator(
                         '#file-loader input[type="file"], input[accept*="image"]'
@@ -304,15 +232,15 @@ class YouTubeUploader:
                         await asyncio.sleep(2)
                         logger.info(f"   ✅ Thumbnail set")
                 except Exception:
-                    logger.warning(f"   ⚠️ Thumbnail skipped")
+                    pass
 
-            # STEP 9: Wait for processing
-            logger.info(f"   9️⃣ Waiting for processing...")
+            # Step 8: Wait for processing
+            logger.info(f"   8️⃣ Processing...")
             for i in range(60):
                 try:
                     body = await self.page.inner_text('body')
                     if any(p in body for p in ['Checks complete', 'Processing complete']):
-                        logger.info(f"   ✅ Processing done ({i*5}s)")
+                        logger.info(f"   ✅ Done ({i*5}s)")
                         break
                     if 'Upload failed' in body:
                         raise Exception("Upload failed")
@@ -321,46 +249,34 @@ class YouTubeUploader:
                         raise
                 await asyncio.sleep(5)
                 if i > 0 and i % 12 == 0:
-                    logger.info(f"      ⏳ Processing... ({i*5}s)")
+                    logger.info(f"      ⏳ {i*5}s...")
 
-            # STEP 10: Next > Next > Next > Public > Publish
-            logger.info(f"   🔟 Publishing...")
-
+            # Step 9: Next × 3 → Public → Publish
+            logger.info(f"   9️⃣ Publishing...")
             for step in range(3):
-                try:
-                    btn = await self.page.wait_for_selector('#next-button', timeout=5000)
-                    if btn: await btn.click()
-                except Exception:
-                    await self.page.evaluate("""
-                        () => { const b = document.querySelector('#next-button');
-                                if(b) b.click(); }
-                    """)
+                await self.page.evaluate(
+                    "() => { const b = document.querySelector('#next-button'); if(b) b.click(); }"
+                )
                 await asyncio.sleep(2)
 
-            # Public
             await self.page.evaluate("""
                 () => {
-                    const radios = document.querySelectorAll('tp-yt-paper-radio-button');
-                    for (const r of radios) {
-                        if ((r.getAttribute('name')||'') === 'PUBLIC' ||
-                            (r.textContent||'').includes('Public')) {
-                            r.click(); return;
+                    const r = document.querySelectorAll('tp-yt-paper-radio-button');
+                    for (const x of r) {
+                        if ((x.getAttribute('name')||'') === 'PUBLIC' ||
+                            (x.textContent||'').includes('Public')) {
+                            x.click(); return;
                         }
                     }
                 }
             """)
             await asyncio.sleep(1)
 
-            # Publish/Done
-            await self.page.evaluate("""
-                () => {
-                    const b = document.querySelector('#done-button');
-                    if(b) b.click();
-                }
-            """)
+            await self.page.evaluate(
+                "() => { const b = document.querySelector('#done-button'); if(b) b.click(); }"
+            )
             logger.info(f"   ✅ Publish clicked")
 
-            # Wait for confirmation (30s max)
             for i in range(6):
                 await asyncio.sleep(5)
                 try:
@@ -376,7 +292,7 @@ class YouTubeUploader:
             return url
 
         except Exception as e:
-            logger.error(f"   ❌ Upload FAILED: {e}")
+            logger.error(f"   ❌ FAILED: {e}")
             await self._screenshot("upload_error")
             raise
         finally:
