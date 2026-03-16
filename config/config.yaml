@@ -93,7 +93,7 @@ content:
     
   shorts:
     max_duration_seconds: 58
-    min_duration_seconds: 25
+    min_duration_seconds: 15
     resolution_w: 1080
     resolution_h: 1920
     fps: 30
