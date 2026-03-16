@@ -230,7 +230,6 @@ Return ONLY valid JSON array:
 
         topic = topic_data.get('topic', '')
         topic_local = topic_data.get('topic_local', topic)
-        emotions_map = topic_data.get('emotions_map', {})
 
         logger.info(f"🧠 STEP: Generating script for '{topic}'...")
         logger.info(f"   Language: {language}, Target: {target_words} words")
@@ -261,82 +260,64 @@ Tease what they'll learn. Make them NEED to keep watching.)
 (Write 200+ words. First main point explained in detail.
 Give a specific real-world EXAMPLE from India.
 Use numbers and statistics. Compare to something relatable.
-"ఇది ఎంత పెద్దది అంటే..." / "ये कितना बड़ा है..."
-End with curiosity for next section: "కానీ ఇది మొదటి భాగం మాత్రమే...")
+End with curiosity for next section.)
 
 [SECTION_2: {{Interesting title in {language}}}]
 (Write 200+ words. Second point — go DEEPER.
 Reveal something surprising or counter-intuitive.
 Tell a mini-story or case study. Make it dramatic.
-"మీరు నమ్మరు కానీ..." / "आप विश्वास नहीं करेंगे लेकिन..."
 Include a "but here's the twist" moment.)
 
 [SECTION_3: {{Interesting title in {language}}}]
 (Write 200+ words. The HUMAN angle.
 How does this affect normal people in India?
 Give a relatable everyday example.
-Connect to Indian culture, daily life, cities.
-Make the viewer feel personally connected.)
+Connect to Indian culture, daily life, cities.)
 
 [SECTION_4: {{Interesting title in {language}}}]
 (Write 200+ words. THE CLIMAX — most mind-blowing revelation.
 Save the absolute BEST fact or insight for here.
-Build tension, then reveal. Make viewers say "WOW!"
-This section should be the most exciting and surprising.)
+Build tension, then reveal. Make viewers say "WOW!")
 
 [CTA]
-(Write 100+ words. Summarize 3 key takeaways as bullet points.
-Warm call to subscribe: "ఈ వీడియో నచ్చితే subscribe చేయండి"
-Tease next video topic to create anticipation.
-End with a memorable one-liner they'll remember.)
+(Write 100+ words. Summarize 3 key takeaways.
+Warm call to subscribe. Tease next video topic.
+End with a memorable one-liner.)
 
-IMPORTANT RULES:
-- Every section MUST have [VISUAL: description] tags (2-3 per section)
-- Ask rhetorical questions every 3-4 sentences to maintain engagement
-- Include at least 8 specific numbers/facts/statistics across the script
-- Reference Indian context: cities, cricket, Bollywood, festivals, food
-- Use dramatic pauses: "..." before big reveals
-- Each section must START with its own mini-hook sentence
-- Total script MUST be over 1200 words
+RULES:
+- Add [VISUAL: description] tags (2-3 per section)
+- Ask rhetorical questions every 3-4 sentences
+- Include at least 8 specific numbers/facts
+- Reference Indian context
+- Total MUST be over 1200 words
 
-Write ONLY the script. No explanations before or after.
-REMEMBER: MINIMUM 1200 WORDS. Write MORE content, not less."""
+Write ONLY the script."""
 
         script = self._call_ai(prompt)
         word_count = len(script.split())
         logger.info(f"   ✅ Script generated: {word_count} words")
 
-        # If script is too short, ask for expansion
         if word_count < 800:
             logger.info(f"   🔄 Script too short ({word_count} words), requesting expansion...")
 
-            expand_prompt = f"""The following {language} script is only {word_count} words.
-It needs to be at least 1200 words for a 10-minute YouTube video.
+            expand_prompt = f"""Expand this {language} script to 1200+ words. Add more details, examples, statistics, and engagement to each section. Keep [HOOK], [SECTION_1] etc markers.
 
-EXPAND each section with:
-- More detailed explanations and examples
-- Additional examples from India
-- More rhetorical questions
-- More statistics and facts
-- Longer descriptions and stories
-- More emotional engagement
+SCRIPT:
+{script[:3000]}
 
-Keep the same [HOOK], [SECTION_1], etc. markers.
-Keep the same {language} language.
+Write expanded version:"""
 
-ORIGINAL SCRIPT:
-{script}
-
-Write the EXPANDED version (minimum 1200 words):"""
-
-            expanded = self._call_ai(expand_prompt)
-            expanded_count = len(expanded.split())
-
-            if expanded_count > word_count:
-                script = expanded
-                logger.info(f"   ✅ Expanded to {expanded_count} words")
-            else:
-                logger.info(f"   ⚠️ Expansion didn't help ({expanded_count} words)")
+            try:
+                expanded = self._call_ai(expand_prompt)
+                expanded_count = len(expanded.split())
+                if expanded_count > word_count:
+                    script = expanded
+                    logger.info(f"   ✅ Expanded to {expanded_count} words")
+                else:
+                    logger.info(f"   ⚠️ Expansion didn't help ({expanded_count} words)")
+            except Exception as e:
+                logger.warning(f"   ⚠️ Expansion failed: {e}")
+                logger.info(f"   Using original {word_count}-word script")
 
         return script
 
