@@ -1,5 +1,5 @@
 """
-YOUTUBE UPLOADER — Handles hidden file inputs + JS fallbacks
+YOUTUBE UPLOADER — Fixed: ensures upload modal actually opens
 """
 
 import asyncio
@@ -71,121 +71,220 @@ class YouTubeUploader:
         try:
             os.makedirs("output/logs/screenshots", exist_ok=True)
             path = f"output/logs/screenshots/{name}_{datetime.now().strftime('%H%M%S')}.png"
-            await self.page.screenshot(path=path)
+            await self.page.screenshot(path=path, full_page=True)
             logger.info(f"   📸 Screenshot: {path}")
         except Exception:
             pass
 
-    async def _click_js(self, js_code, description="element"):
-        try:
-            result = await self.page.evaluate(js_code)
-            if result:
-                logger.info(f"   ✅ {description}")
-                await asyncio.sleep(1)
-                return True
-        except Exception:
-            pass
-        return False
-
     async def upload_video(self, video_path, title, description,
                             tags=None, thumbnail_path=None, is_short=False):
         vtype = "Short" if is_short else "Long-form"
+        file_size_mb = os.path.getsize(video_path) / (1024 * 1024)
         logger.info(f"\n   {'─'*50}")
         logger.info(f"   📤 UPLOADING {vtype}: {title[:50]}...")
-        logger.info(f"   📊 Size: {os.path.getsize(video_path)/(1024*1024):.1f} MB")
+        logger.info(f"   📊 Size: {file_size_mb:.1f} MB")
 
         try:
             await self._start_browser()
 
-            # Step 1: Go to upload page
-            logger.info(f"   1️⃣ Opening upload page...")
+            # ════════════════════════════════════════
+            # STEP 1: Open YouTube Studio
+            # ════════════════════════════════════════
+            logger.info(f"   1️⃣ Opening YouTube Studio...")
             await self.page.goto(
-                'https://studio.youtube.com/channel/UC/videos/upload?d=ud',
-                wait_until='domcontentloaded', timeout=30000
+                'https://studio.youtube.com',
+                wait_until='networkidle', timeout=30000
             )
-            await asyncio.sleep(4)
+            await asyncio.sleep(3)
 
             if 'accounts.google.com' in self.page.url:
-                raise Exception("Session expired")
+                raise Exception("Session expired — cookies invalid")
 
-            logger.info(f"   ✅ Studio loaded")
+            current_url = self.page.url
+            logger.info(f"   ✅ Studio loaded: {current_url[:60]}")
+            await self._screenshot("step1_studio_loaded")
 
-            # Step 2: Find file input — it is HIDDEN, use state='attached'
-            logger.info(f"   2️⃣ Finding upload input...")
+            # ════════════════════════════════════════
+            # STEP 2: Click CREATE button to open menu
+            # ════════════════════════════════════════
+            logger.info(f"   2️⃣ Clicking CREATE button...")
 
-            file_input = None
+            create_clicked = False
 
-            # Method 1: Find hidden file input directly
-            try:
-                file_input = await self.page.wait_for_selector(
-                    'input[type="file"]', state='attached', timeout=8000
-                )
-                logger.info(f"   ✅ File input found (attached)")
-            except Exception:
-                logger.info(f"   🔄 File input not ready, trying button click...")
+            # Method A: Click the create/upload icon
+            for sel in ['#create-icon', 'ytcp-button#create-icon',
+                        '#upload-icon', '.ytcp-button-shape-impl--icon-button']:
+                try:
+                    el = await self.page.wait_for_selector(sel, timeout=3000)
+                    if el:
+                        await el.click()
+                        create_clicked = True
+                        logger.info(f"   ✅ Create button clicked: {sel}")
+                        break
+                except Exception:
+                    continue
 
-            # Method 2: Click SELECT FILES button to trigger dialog
-            if not file_input:
-                await self._click_js("""
+            # Method B: JavaScript
+            if not create_clicked:
+                create_clicked = await self.page.evaluate("""
                     () => {
-                        // Try select files button
-                        const sfb = document.querySelector('#select-files-button');
-                        if (sfb) { sfb.click(); return true; }
-                        // Try by text
-                        const btns = document.querySelectorAll('ytcp-button, button');
+                        // Look for create/upload button
+                        const icons = document.querySelectorAll(
+                            '#create-icon, [id*="create"], [id*="upload"]'
+                        );
+                        for (const icon of icons) {
+                            const btn = icon.closest('ytcp-button') || 
+                                       icon.closest('button') || icon;
+                            if (btn) { btn.click(); return true; }
+                        }
+                        // Try by aria-label
+                        const btns = document.querySelectorAll('button, ytcp-button');
                         for (const b of btns) {
-                            const t = (b.textContent || '').toLowerCase();
-                            if (t.includes('select file') || t.includes('upload')) {
+                            const label = b.getAttribute('aria-label') || '';
+                            if (label.includes('Create') || label.includes('Upload')) {
                                 b.click(); return true;
                             }
                         }
                         return false;
                     }
-                """, "Select Files button")
-                await asyncio.sleep(2)
+                """)
+                if create_clicked:
+                    logger.info(f"   ✅ Create button clicked (JS)")
 
+            if not create_clicked:
+                await self._screenshot("step2_no_create_button")
+                raise Exception("Could not find Create button")
+
+            await asyncio.sleep(2)
+
+            # ════════════════════════════════════════
+            # STEP 3: Click "Upload videos" from dropdown
+            # ════════════════════════════════════════
+            logger.info(f"   3️⃣ Clicking 'Upload videos'...")
+
+            upload_clicked = False
+
+            for sel in ['#text-item-0', 'tp-yt-paper-item:first-child',
+                        'tp-yt-paper-item:has-text("Upload")']:
                 try:
-                    file_input = await self.page.wait_for_selector(
-                        'input[type="file"]', state='attached', timeout=8000
-                    )
-                    logger.info(f"   ✅ File input found after button click")
+                    el = await self.page.wait_for_selector(sel, timeout=3000)
+                    if el:
+                        await el.click()
+                        upload_clicked = True
+                        logger.info(f"   ✅ Upload menu clicked: {sel}")
+                        break
+                except Exception:
+                    continue
+
+            if not upload_clicked:
+                upload_clicked = await self.page.evaluate("""
+                    () => {
+                        const items = document.querySelectorAll(
+                            'tp-yt-paper-item, ytcp-ve, [role="menuitem"]'
+                        );
+                        for (const item of items) {
+                            const text = (item.textContent || '').toLowerCase();
+                            if (text.includes('upload video') || text.includes('upload')) {
+                                item.click(); return true;
+                            }
+                        }
+                        return false;
+                    }
+                """)
+                if upload_clicked:
+                    logger.info(f"   ✅ Upload menu clicked (JS)")
+
+            if not upload_clicked:
+                await self._screenshot("step3_no_upload_menu")
+                raise Exception("Could not find Upload option in menu")
+
+            await asyncio.sleep(3)
+            await self._screenshot("step3_upload_dialog")
+
+            # ════════════════════════════════════════
+            # STEP 4: Upload file via hidden input
+            # ════════════════════════════════════════
+            logger.info(f"   4️⃣ Uploading file...")
+
+            # Find the file input (hidden)
+            file_input = await self.page.wait_for_selector(
+                'input[type="file"]', state='attached', timeout=10000
+            )
+
+            if not file_input:
+                raise Exception("File input not found in upload dialog")
+
+            await file_input.set_input_files(os.path.abspath(video_path))
+            logger.info(f"   ✅ File selected: {os.path.basename(video_path)}")
+
+            # ════════════════════════════════════════
+            # STEP 5: VERIFY upload actually started
+            # ════════════════════════════════════════
+            logger.info(f"   5️⃣ Verifying upload started...")
+
+            upload_started = False
+            for i in range(20):  # Check for 100 seconds
+                await asyncio.sleep(5)
+                try:
+                    body = await self.page.inner_text('body')
+
+                    # These indicate upload dialog is active
+                    if any(indicator in body for indicator in [
+                        'Upload', 'Uploading', 'Processing',
+                        'Add a title', 'Details', 'Video elements',
+                        'Checks', 'Visibility'
+                    ]):
+                        # Check it's NOT just the regular video list
+                        if any(dialog_indicator in body for dialog_indicator in [
+                            'Add a title', 'Details',
+                            'description', 'Description',
+                            'Made for kids', 'Audience',
+                            'Uploading', 'Processing',
+                        ]):
+                            upload_started = True
+                            logger.info(f"   ✅ Upload dialog active! ({i*5}s)")
+                            break
+
+                    # Check for percentage
+                    pct_match = re.search(r'(\d+)%', body)
+                    if pct_match:
+                        pct = int(pct_match.group(1))
+                        if pct > 0:
+                            upload_started = True
+                            logger.info(f"   ✅ Upload progress: {pct}% ({i*5}s)")
+                            break
+
                 except Exception:
                     pass
 
-            # Method 3: Use page.set_input_files directly with locator
-            if not file_input:
-                logger.info(f"   🔄 Using direct locator method...")
+                if i > 0 and i % 4 == 0:
+                    logger.info(f"      ⏳ Waiting for upload to start... ({i*5}s)")
+
+            if not upload_started:
+                await self._screenshot("step5_upload_not_started")
+                logger.error(f"   ❌ Upload does not appear to have started!")
+                logger.info(f"   Current URL: {self.page.url}")
+                # Try to get page title for debugging
                 try:
-                    locator = self.page.locator('input[type="file"]')
-                    count = await locator.count()
-                    logger.info(f"   Found {count} file inputs")
-                    if count > 0:
-                        await locator.first.set_input_files(os.path.abspath(video_path))
-                        logger.info(f"   ✅ File set via locator")
-                        await asyncio.sleep(5)
-                        # Skip step 3 since file is already set
-                        file_input = "ALREADY_SET"
-                except Exception as e:
-                    logger.warning(f"   ⚠️ Locator method failed: {e}")
+                    title_text = await self.page.title()
+                    logger.info(f"   Page title: {title_text}")
+                except Exception:
+                    pass
+                raise Exception(
+                    "Upload did not start — dialog may not have opened. "
+                    "Check screenshot."
+                )
 
-            if not file_input:
-                await self._screenshot("no_file_input")
-                raise Exception("Could not find file input")
+            # ════════════════════════════════════════
+            # STEP 6: Set title
+            # ════════════════════════════════════════
+            logger.info(f"   6️⃣ Setting title...")
+            title_clean = title[:100]
 
-            # Step 3: Set file (if not already set)
-            if file_input != "ALREADY_SET":
-                logger.info(f"   3️⃣ Selecting file...")
-                await file_input.set_input_files(os.path.abspath(video_path))
-                logger.info(f"   ✅ File selected")
-                await asyncio.sleep(5)
-
-            # Step 4: Title
-            logger.info(f"   4️⃣ Setting title...")
-            await asyncio.sleep(2)
-
-            title_set = False
-            for sel in ['#textbox[aria-label*="title"]', '#textbox[aria-label*="Title"]',
-                        '#title-textarea #textbox']:
+            for sel in ['#textbox[aria-label*="title"]',
+                        '#textbox[aria-label*="Title"]',
+                        '#title-textarea #textbox',
+                        'div#textbox[contenteditable="true"]']:
                 try:
                     el = await self.page.wait_for_selector(sel, timeout=5000)
                     if el:
@@ -193,28 +292,16 @@ class YouTubeUploader:
                         await self.page.keyboard.press('Control+A')
                         await self.page.keyboard.press('Delete')
                         await asyncio.sleep(0.3)
-                        await self.page.keyboard.type(title[:100], delay=10)
-                        title_set = True
+                        await self.page.keyboard.type(title_clean, delay=15)
                         logger.info(f"   ✅ Title set")
                         break
                 except Exception:
                     continue
 
-            if not title_set:
-                await self._click_js(f"""
-                    () => {{
-                        const boxes = document.querySelectorAll('#textbox');
-                        if (boxes.length > 0) {{
-                            boxes[0].textContent = '{title[:100].replace("'", "").replace('"', '')}';
-                            boxes[0].dispatchEvent(new Event('input', {{bubbles: true}}));
-                            return true;
-                        }}
-                        return false;
-                    }}
-                """, "Title (JS)")
-
-            # Step 5: Description
-            logger.info(f"   5️⃣ Setting description...")
+            # ════════════════════════════════════════
+            # STEP 7: Set description
+            # ════════════════════════════════════════
+            logger.info(f"   7️⃣ Setting description...")
             try:
                 desc_el = await self.page.wait_for_selector(
                     '#description-textarea #textbox', timeout=5000
@@ -226,146 +313,153 @@ class YouTubeUploader:
             except Exception:
                 logger.warning(f"   ⚠️ Description skipped")
 
-            # Step 6: Not for kids — multiple methods
-            logger.info(f"   6️⃣ Setting 'Not made for kids'...")
-            kids_set = False
+            # ════════════════════════════════════════
+            # STEP 8: Not made for kids
+            # ════════════════════════════════════════
+            logger.info(f"   8️⃣ Setting 'Not made for kids'...")
 
+            # Scroll down to find the audience section
+            await self.page.evaluate("window.scrollBy(0, 300)")
+            await asyncio.sleep(1)
+
+            kids_set = False
             for sel in ['tp-yt-paper-radio-button[name="NOT_MADE_FOR_KIDS"]',
                         'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]']:
                 try:
-                    el = await self.page.wait_for_selector(sel, timeout=3000)
+                    el = await self.page.wait_for_selector(sel, timeout=5000)
                     if el:
                         await el.click()
                         kids_set = True
-                        logger.info(f"   ✅ Not for kids (selector)")
+                        logger.info(f"   ✅ Not for kids set")
                         break
                 except Exception:
                     continue
 
             if not kids_set:
-                kids_set = await self._click_js("""
+                kids_set = await self.page.evaluate("""
                     () => {
                         const radios = document.querySelectorAll('tp-yt-paper-radio-button');
                         for (const r of radios) {
                             const name = r.getAttribute('name') || '';
                             const text = (r.textContent || '').toLowerCase();
                             if (name.includes('NOT_MADE') || name.includes('NOT_MFK') ||
-                                text.includes('not made for kids') || text.includes("no, it")) {
+                                text.includes('no, it') || text.includes('not made for kids')) {
                                 r.click(); return true;
                             }
                         }
-                        const all = document.querySelectorAll('#audience tp-yt-paper-radio-button');
-                        if (all.length >= 2) { all[1].click(); return true; }
                         return false;
                     }
-                """, "Not for kids (JS)")
+                """)
+                if kids_set:
+                    logger.info(f"   ✅ Not for kids (JS)")
 
             if not kids_set:
-                logger.warning(f"   ⚠️ Kids setting failed — may go to drafts")
-                await self._screenshot("kids_failed")
+                logger.warning(f"   ⚠️ Could not set kids — video may go to drafts")
+                await self._screenshot("step8_kids_failed")
 
-            # Step 7: Thumbnail
+            # ════════════════════════════════════════
+            # STEP 9: Set thumbnail
+            # ════════════════════════════════════════
             if thumbnail_path and os.path.exists(thumbnail_path):
-                logger.info(f"   7️⃣ Setting thumbnail...")
+                logger.info(f"   9️⃣ Setting thumbnail...")
                 try:
-                    thumb = self.page.locator('#file-loader input[type="file"], input[accept="image/jpeg,image/png"]')
-                    if await thumb.count() > 0:
-                        await thumb.first.set_input_files(os.path.abspath(thumbnail_path))
+                    thumb_locator = self.page.locator(
+                        '#file-loader input[type="file"], input[accept*="image"]'
+                    )
+                    if await thumb_locator.count() > 0:
+                        await thumb_locator.first.set_input_files(
+                            os.path.abspath(thumbnail_path)
+                        )
                         await asyncio.sleep(2)
                         logger.info(f"   ✅ Thumbnail set")
                 except Exception:
                     logger.warning(f"   ⚠️ Thumbnail skipped")
 
-            # Step 8: Wait for processing
-            logger.info(f"   8️⃣ Waiting for processing...")
-            for i in range(36):
+            # ════════════════════════════════════════
+            # STEP 10: Wait for upload to finish processing
+            # ════════════════════════════════════════
+            logger.info(f"   🔟 Waiting for upload to finish...")
+
+            for i in range(60):  # Max 5 minutes
                 try:
                     body = await self.page.inner_text('body')
-                    if any(p in body for p in ['Checks complete', 'Upload complete',
-                                                'Processing complete', 'SD', 'HD']):
-                        logger.info(f"   ✅ Processed ({i*5}s)")
+
+                    if 'Checks complete' in body or 'Processing complete' in body:
+                        logger.info(f"   ✅ Upload processing complete ({i*5}s)")
+                        break
+
+                    # Check for percentage
+                    pct_match = re.search(r'(\d+)\s*%\s*(?:uploaded|processed)', body, re.I)
+                    if pct_match:
+                        logger.info(f"      Upload: {pct_match.group(0)}")
+
+                    if 'Upload failed' in body:
+                        raise Exception("YouTube reported upload failed")
+
+                except Exception as e:
+                    if 'failed' in str(e).lower():
+                        raise
+                await asyncio.sleep(5)
+                if i > 0 and i % 6 == 0:
+                    logger.info(f"      ⏳ Still processing... ({i*5}s)")
+
+            # ════════════════════════════════════════
+            # STEP 11: Click NEXT buttons (3 times)
+            # ════════════════════════════════════════
+            logger.info(f"   1️⃣1️⃣ Navigating to visibility...")
+
+            for step in range(3):
+                for sel in ['#next-button', 'ytcp-button#next-button']:
+                    try:
+                        btn = await self.page.wait_for_selector(sel, timeout=5000)
+                        if btn:
+                            await btn.click()
+                            logger.info(f"      Next {step+1}/3 ✅")
+                            break
+                    except Exception:
+                        continue
+                await asyncio.sleep(2)
+
+            # ════════════════════════════════════════
+            # STEP 12: Set PUBLIC and Publish
+            # ════════════════════════════════════════
+            logger.info(f"   1️⃣2️⃣ Setting Public and Publishing...")
+
+            # Click Public
+            for sel in ['tp-yt-paper-radio-button[name="PUBLIC"]']:
+                try:
+                    el = await self.page.wait_for_selector(sel, timeout=5000)
+                    if el:
+                        await el.click()
+                        logger.info(f"      Public ✅")
                         break
                 except Exception:
                     pass
-                await asyncio.sleep(5)
-                if i > 0 and i % 6 == 0:
-                    logger.info(f"      ⏳ Processing... ({i*5}s)")
 
-            # Step 9: NEXT × 3
-            logger.info(f"   9️⃣ Navigating to visibility...")
-            for step in range(3):
+            await asyncio.sleep(1)
+
+            # Click Publish/Done
+            for sel in ['#done-button', 'ytcp-button#done-button']:
                 try:
-                    btn = await self.page.wait_for_selector('#next-button', timeout=3000)
+                    btn = await self.page.wait_for_selector(sel, timeout=5000)
                     if btn:
                         await btn.click()
+                        logger.info(f"      Publish clicked ✅")
+                        break
                 except Exception:
-                    await self._click_js("""
-                        () => {
-                            const b = document.querySelector('#next-button');
-                            if (b) { b.click(); return true; }
-                            return false;
-                        }
-                    """, f"Next {step+1}")
-                await asyncio.sleep(2)
+                    pass
 
-            # Step 10: PUBLIC
-            logger.info(f"   🔟 Setting PUBLIC...")
-            try:
-                el = await self.page.wait_for_selector(
-                    'tp-yt-paper-radio-button[name="PUBLIC"]', timeout=3000
-                )
-                if el:
-                    await el.click()
-                    logger.info(f"   ✅ Public set")
-            except Exception:
-                await self._click_js("""
-                    () => {
-                        const radios = document.querySelectorAll('tp-yt-paper-radio-button');
-                        for (const r of radios) {
-                            if ((r.getAttribute('name')||'') === 'PUBLIC' ||
-                                (r.textContent||'').includes('Public')) {
-                                r.click(); return true;
-                            }
-                        }
-                        return false;
-                    }
-                """, "Public (JS)")
-
-            # Step 11: PUBLISH
-            logger.info(f"   1️⃣1️⃣ Publishing...")
-            try:
-                btn = await self.page.wait_for_selector('#done-button', timeout=3000)
-                if btn:
-                    await btn.click()
-                    logger.info(f"   ✅ Publish clicked")
-            except Exception:
-                await self._click_js("""
-                    () => {
-                        const b = document.querySelector('#done-button');
-                        if (b) { b.click(); return true; }
-                        const btns = document.querySelectorAll('ytcp-button');
-                        for (const x of btns) {
-                            if ((x.textContent||'').match(/publish|done|save/i)) {
-                                x.click(); return true;
-                            }
-                        }
-                        return false;
-                    }
-                """, "Publish (JS)")
-
-            # Wait for confirmation (max 60s)
-            logger.info(f"   ⏳ Confirming publish (max 60s)...")
-            for i in range(12):
+            # Wait for confirmation
+            logger.info(f"   ⏳ Confirming (max 30s)...")
+            for i in range(6):
                 await asyncio.sleep(5)
                 try:
                     body = await self.page.inner_text('body')
-                    if any(p in body for p in ['Video published', 'has been published',
-                                                'is being published', 'is live']):
-                        logger.info(f"   ✅ PUBLISHED!")
-                        break
-                    close = await self.page.query_selector('ytcp-button[id="close-button"]')
-                    if close:
-                        logger.info(f"   ✅ PUBLISHED (close dialog found)")
+                    if any(p in body for p in [
+                        'Video published', 'has been published',
+                        'Your video is live'
+                    ]):
+                        logger.info(f"   ✅ PUBLISHED CONFIRMED!")
                         break
                 except Exception:
                     pass
