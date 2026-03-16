@@ -24,9 +24,9 @@ channels:
       - "health and fitness"
     character:
       style: "female_anime_teacher"
-      hair_color: [30, 30, 80]
-      eye_color: [100, 50, 200]
-      outfit_color: [200, 50, 50]
+      hair_color: [20, 20, 60]
+      eye_color: [80, 40, 180]
+      outfit_color: [180, 40, 40]
 
   hindi:
     enabled: true
@@ -51,21 +51,21 @@ channels:
 
 content:
   long_form:
-    target_words: 1500
-    min_words: 1200
-    max_words: 2000
-    resolution_w: 1280
-    resolution_h: 720
-    fps: 15
-    bitrate: "2000k"
+    target_words: 2000
+    min_words: 1500
+    max_words: 2500
+    resolution_w: 1920
+    resolution_h: 1080
+    fps: 24
+    bitrate: "4000k"
 
   shorts:
     max_duration_seconds: 58
     min_duration_seconds: 15
-    resolution_w: 720
-    resolution_h: 1280
-    fps: 15
-    bitrate: "1500k"
+    resolution_w: 1080
+    resolution_h: 1920
+    fps: 24
+    bitrate: "3000k"
     shorts_per_long_video: 5
 
   animation:
@@ -83,10 +83,10 @@ footage:
 voice:
   breathing:
     enabled: true
-    short_breath_ms: 300
-    long_breath_ms: 600
-    sentence_pause_ms: 400
-    comma_pause_ms: 200
+    short_breath_ms: 250
+    long_breath_ms: 500
+    sentence_pause_ms: 350
+    comma_pause_ms: 180
 
 output:
   base_dir: "output"
