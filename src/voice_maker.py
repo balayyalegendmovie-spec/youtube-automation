@@ -39,6 +39,17 @@ class VoiceMaker:
         cleaned = re.sub(r'\[VISUAL:.*?\]', '', cleaned)
         cleaned = re.sub(r'<[^>]+>', '', cleaned)
         cleaned = re.sub(r'\(.*?\)', '', cleaned)
+
+        # Add natural pauses for more realistic speech
+        cleaned = cleaned.replace('...', ',,, ')  # Ellipsis = long pause
+        cleaned = cleaned.replace('—', ', ')
+        cleaned = cleaned.replace(' - ', ', ')
+
+        # Add pause after question marks
+        cleaned = re.sub(r'\?\s+', '? ... ', cleaned)
+        # Add pause after exclamation
+        cleaned = re.sub(r'!\s+', '! ... ', cleaned)
+
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         cleaned = re.sub(r'[ \t]+', ' ', cleaned)
         return cleaned.strip()
