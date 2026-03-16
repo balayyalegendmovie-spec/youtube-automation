@@ -112,14 +112,13 @@ class GeminiBrain:
             self.providers.append(GroqProvider(self.groq_key, "llama-3.3-70b-versatile"))
 
         if self.groq_key_2:
-            self.providers.append(GroqProvider(self.groq_key_2, "llama-3.1-70b-versatile"))
+            self.providers.append(GroqProvider(self.groq_key_2, "llama3-70b-8192"))
 
         if self.gemini_key:
-            self.providers.append(GeminiProvider(self.gemini_key, "gemini-1.5-flash"))
             self.providers.append(GeminiProvider(self.gemini_key, "gemini-2.0-flash"))
 
         if self.groq_key:
-            self.providers.append(GroqProvider(self.groq_key, "llama-3.1-8b-instant"))
+            self.providers.append(GroqProvider(self.groq_key, "llama-3.3-70b-specdec"))
 
         if not self.providers:
             raise Exception("No AI API keys! Set GEMINI_API_KEY or GROQ_API_KEY")
