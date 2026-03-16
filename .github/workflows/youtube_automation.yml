@@ -149,11 +149,9 @@ jobs:
         run: |
           cd assets/music
           if [ ! -f "bg_ambient.mp3" ]; then
-            wget -q "https://cdn.pixabay.com/audio/2024/11/08/audio_b5464ccdba.mp3" \
-              -O bg_ambient.mp3 2>/dev/null && echo "Music downloaded" || {
-              echo "Music download failed - creating silent placeholder"
-              ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 60 -q:a 9 bg_ambient.mp3 2>/dev/null || true
-            }
+            echo "Creating silent background track..."
+            ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 120 -b:a 128k -f mp3 bg_ambient.mp3 2>/dev/null
+            echo "Silent background track created"
           fi
           ls -la
 
