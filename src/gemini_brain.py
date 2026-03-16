@@ -1,12 +1,5 @@
 """
 AI BRAIN — Multi-Provider with Automatic Fallback
-
-Providers (all FREE):
-1. Gemini (google-generativeai) — multiple models
-2. Groq (groq) — very generous free tier
-3. Direct HTTP to Gemini REST API — avoids SDK quota issues
-
-If one provider fails → automatically tries next one.
 """
 
 import json
@@ -20,148 +13,89 @@ logger = logging.getLogger(__name__)
 
 
 class AIProvider:
-    """Base class for AI providers"""
-    
     def __init__(self, name, api_key):
         self.name = name
         self.api_key = api_key
         self.available = bool(api_key)
-    
+
     def generate(self, prompt):
         raise NotImplementedError
 
 
 class GeminiProvider(AIProvider):
-    """Google Gemini via REST API (avoids deprecated SDK issues)"""
-    
     def __init__(self, api_key, model="gemini-2.0-flash-lite"):
         super().__init__(f"Gemini ({model})", api_key)
         self.model = model
         self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-    
+
     def generate(self, prompt):
-        url = (
-            f"{self.base_url}/models/{self.model}:generateContent"
-            f"?key={self.api_key}"
-        )
-        
+        url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
         payload = {
-            "contents": [
-                {
-                    "parts": [
-                        {"text": prompt}
-                    ]
-                }
-            ],
+            "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.85,
                 "topP": 0.95,
                 "maxOutputTokens": 8192,
             }
         }
-        
-        response = http_requests.post(
-            url,
-            json=payload,
-            headers={"Content-Type": "application/json"},
-            timeout=60
-        )
-        
+        response = http_requests.post(url, json=payload,
+                                       headers={"Content-Type": "application/json"},
+                                       timeout=60)
         if response.status_code == 429:
-            raise Exception(f"Gemini rate limited (429)")
-        
+            raise Exception("Gemini rate limited (429)")
         if response.status_code != 200:
-            error_msg = response.text[:300]
-            raise Exception(f"Gemini API error {response.status_code}: {error_msg}")
-        
+            raise Exception(f"Gemini API error {response.status_code}: {response.text[:300]}")
         data = response.json()
-        
-        # Extract text from response
         candidates = data.get("candidates", [])
         if not candidates:
             raise Exception("Gemini returned no candidates")
-        
         parts = candidates[0].get("content", {}).get("parts", [])
         if not parts:
             raise Exception("Gemini returned no content parts")
-        
         return parts[0].get("text", "")
 
 
 class GroqProvider(AIProvider):
-    """Groq API — FREE tier: 30 RPM, 14400 RPD"""
-    
     def __init__(self, api_key, model="llama-3.3-70b-versatile"):
         super().__init__(f"Groq ({model})", api_key)
         self.model = model
         self.base_url = "https://api.groq.com/openai/v1"
-    
+
     def generate(self, prompt):
         url = f"{self.base_url}/chat/completions"
-        
         payload = {
             "model": self.model,
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ],
+            "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.85,
             "max_tokens": 8192,
         }
-        
-        response = http_requests.post(
-            url,
-            json=payload,
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.api_key}"
-            },
-            timeout=60
-        )
-        
+        response = http_requests.post(url, json=payload,
+                                       headers={"Content-Type": "application/json",
+                                                "Authorization": f"Bearer {self.api_key}"},
+                                       timeout=60)
         if response.status_code == 429:
-            raise Exception(f"Groq rate limited (429)")
-        
+            raise Exception("Groq rate limited (429)")
         if response.status_code != 200:
-            error_msg = response.text[:300]
-            raise Exception(f"Groq API error {response.status_code}: {error_msg}")
-        
+            raise Exception(f"Groq API error {response.status_code}: {response.text[:300]}")
         data = response.json()
-        
         choices = data.get("choices", [])
         if not choices:
             raise Exception("Groq returned no choices")
-        
         return choices[0].get("message", {}).get("content", "")
 
 
 class GeminiBrain:
-    """
-    Multi-provider AI brain with automatic fallback.
-    
-    Tries providers in order:
-    1. Gemini flash-lite (separate quota from flash)
-    2. Groq llama-3.3-70b (FREE, very generous)
-    3. Gemini 1.5-flash (another quota pool)
-    4. Gemini 2.0-flash (original, might be rate limited)
-    """
-    
+
     def __init__(self, config_path="config/config.yaml"):
         import yaml
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
 
-        # Get API keys
-        self.gemini_key = os.environ.get(
-            'GEMINI_API_KEY',
-            self.config.get('gemini', {}).get('api_key', '')
-        )
+        self.gemini_key = os.environ.get('GEMINI_API_KEY',
+                                          self.config.get('gemini', {}).get('api_key', ''))
         self.groq_key = os.environ.get('GROQ_API_KEY', '')
         self.groq_key_2 = os.environ.get('GROQ_API_KEY_2', '')
 
-        # Clean placeholders
         if '${' in str(self.gemini_key):
             self.gemini_key = os.environ.get('GEMINI_API_KEY', '')
         if '${' in str(self.groq_key):
@@ -169,37 +103,23 @@ class GeminiBrain:
         if '${' in str(self.groq_key_2):
             self.groq_key_2 = os.environ.get('GROQ_API_KEY_2', '')
 
-        # Build providers (order = priority)
         self.providers = []
 
         if self.gemini_key:
-            self.providers.append(
-                GeminiProvider(self.gemini_key, "gemini-2.0-flash-lite")
-            )
+            self.providers.append(GeminiProvider(self.gemini_key, "gemini-2.0-flash-lite"))
 
         if self.groq_key:
-            self.providers.append(
-                GroqProvider(self.groq_key, "llama-3.3-70b-versatile")
-            )
+            self.providers.append(GroqProvider(self.groq_key, "llama-3.3-70b-versatile"))
 
         if self.groq_key_2:
-            self.providers.append(
-                GroqProvider(self.groq_key_2, "llama-3.1-70b-versatile")
-            )
+            self.providers.append(GroqProvider(self.groq_key_2, "llama-3.1-70b-versatile"))
 
         if self.gemini_key:
-            self.providers.append(
-                GeminiProvider(self.gemini_key, "gemini-1.5-flash")
-            )
-            self.providers.append(
-                GeminiProvider(self.gemini_key, "gemini-2.0-flash")
-            )
+            self.providers.append(GeminiProvider(self.gemini_key, "gemini-1.5-flash"))
+            self.providers.append(GeminiProvider(self.gemini_key, "gemini-2.0-flash"))
 
         if self.groq_key:
-            # Groq also has other free models as fallback
-            self.providers.append(
-                GroqProvider(self.groq_key, "llama-3.1-8b-instant")
-            )
+            self.providers.append(GroqProvider(self.groq_key, "llama-3.1-8b-instant"))
 
         if not self.providers:
             raise Exception("No AI API keys! Set GEMINI_API_KEY or GROQ_API_KEY")
@@ -208,85 +128,53 @@ class GeminiBrain:
         for p in self.providers:
             status = "READY" if p.available else "NO KEY"
             logger.info(f"   → {p.name}: {status}")
-    
 
     def _call_ai(self, prompt, expect_json=False):
-        """Call AI with automatic fallback between providers"""
-        
         last_error = None
-        
         for provider in self.providers:
             if not provider.available:
                 continue
-            
             try:
                 logger.info(f"   🤖 Trying {provider.name}...")
-                
-                text = provider.generate(prompt)
-                text = text.strip()
-                
+                text = provider.generate(prompt).strip()
                 logger.info(f"   ✅ {provider.name} responded ({len(text)} chars)")
-                
+
                 if expect_json:
                     text = re.sub(r'```json\s*', '', text)
                     text = re.sub(r'```\s*', '', text)
                     text = text.strip()
-                    
-                    # Find JSON in response
                     json_match = re.search(r'[\[{].*[\]}]', text, re.DOTALL)
                     if json_match:
                         text = json_match.group(0)
-                    
                     return json.loads(text)
-                
                 return text
-                
+
             except json.JSONDecodeError as e:
                 logger.warning(f"   ⚠️ {provider.name} JSON parse error: {e}")
                 last_error = e
-                # Try next provider
                 continue
-                
             except Exception as e:
                 error_str = str(e)
                 logger.warning(f"   ⚠️ {provider.name} failed: {error_str[:100]}")
                 last_error = e
-                
-                # If rate limited, try next provider immediately
                 if '429' in error_str or 'rate' in error_str.lower() or 'quota' in error_str.lower():
                     logger.info(f"   ↪️ Switching to next provider...")
                     continue
-                
-                # For other errors, wait briefly then try next
                 time.sleep(3)
                 continue
-        
-        # All providers failed
-        raise Exception(
-            f"All AI providers failed. Last error: {last_error}"
-        )
 
+        raise Exception(f"All AI providers failed. Last error: {last_error}")
 
-    # =============================================
-    # TOPIC GENERATION
-    # =============================================
-    
     def generate_topics(self, niche, language, trend_data=None, count=3):
-        """Generate video topics"""
-        
         logger.info(f"🧠 STEP: Generating topics for '{niche}' in {language}...")
-        
+
         trend_context = ""
         if trend_data:
             trend_topics = [t.get('topic', '') for t in trend_data[:10]]
-            trend_context = f"""
-Currently trending in India:
-{json.dumps(trend_topics[:5], indent=2)}
-Try to relate topics to these trends.
-"""
-        
+            trend_context = f"\nCurrently trending in India:\n{json.dumps(trend_topics[:5], indent=2)}\nTry to relate topics to these trends.\n"
+
         lang_name = "తెలుగు" if language == "telugu" else "हिंदी"
-        
+
         prompt = f"""You are a YouTube content strategist for Indian audience.
 
 Generate {count} video topic ideas.
@@ -330,115 +218,132 @@ Return ONLY valid JSON array:
 ]"""
 
         topics = self._call_ai(prompt, expect_json=True)
-        
         if not isinstance(topics, list):
             topics = [topics]
-        
+
         logger.info(f"   ✅ Generated {len(topics)} topics:")
         for i, t in enumerate(topics):
             logger.info(f"      {i+1}. {t.get('topic', 'N/A')}")
-        
         return topics
 
-
-    # =============================================
-    # SCRIPT GENERATION
-    # =============================================
-    
     def generate_script(self, topic_data, language, target_words=1500):
-        """Generate emotionally rich script"""
-        
+        """Generate emotionally rich script — ENFORCES minimum length"""
+
         topic = topic_data.get('topic', '')
         topic_local = topic_data.get('topic_local', topic)
         emotions_map = topic_data.get('emotions_map', {})
-        
+
         logger.info(f"🧠 STEP: Generating script for '{topic}'...")
         logger.info(f"   Language: {language}, Target: {target_words} words")
-        
+
         lang_name = "తెలుగు" if language == "telugu" else "हिंदी"
         script_type = "Telugu" if language == "telugu" else "Devanagari"
-        
-        emotion_instructions = ""
-        if emotions_map:
-            emotion_instructions = f"""
-EMOTIONS:
-- Hook: {emotions_map.get('hook', 'excited')}
-- Section 1: {emotions_map.get('section_1', 'curious')}
-- Section 2: {emotions_map.get('section_2', 'serious')}
-- Section 3: {emotions_map.get('section_3', 'cheerful')}
-- Section 4: {emotions_map.get('section_4', 'excited')}
-- CTA: {emotions_map.get('cta', 'warm')}
-"""
 
-        prompt = f"""Write a COMPLETE and DETAILED YouTube video script in {language} ({lang_name}).
+        prompt = f"""You are a professional YouTube scriptwriter. Write a LONG, DETAILED video script.
 
 TOPIC: "{topic}" / "{topic_local}"
+LANGUAGE: {language} ({lang_name}) using {script_type} script
 
-{emotion_instructions}
+ABSOLUTE REQUIREMENT: Write MINIMUM 1200 words. Count carefully.
+Each section MUST be 150-200 words minimum.
+Short scripts will be rejected. Write MORE not less.
 
-CRITICAL — LENGTH REQUIREMENT:
-You MUST write AT LEAST {target_words} words. This is a 10-MINUTE video.
-Current target: {target_words} words MINIMUM.
-If your script is under {target_words} words, it will be REJECTED.
-Each section should be 150-250 words.
-Count your words carefully.
+Write naturally like you're explaining to a friend. Mix English technical words.
 
-WRITE IN: {language} using {script_type} script only.
-Style: Natural, conversational, like talking to a friend.
-Mix common English technical terms naturally.
-
-STRUCTURE — Use these EXACT markers:
+STRUCTURE (use these EXACT markers):
 
 [HOOK]
-Write 100-150 words here. Start with a SHOCKING fact. Create curiosity. 
-Ask "మీకు తెలుసా?" or "क्या आपको पता है?" style questions.
+(Write 150+ words. Start with a shocking question or fact. Create intense curiosity.
+Ask "మీకు తెలుసా?" or "क्या आपको पता है?" to hook the viewer.
+Explain WHY this topic matters to them personally.
+Tease what they'll learn. Make them NEED to keep watching.)
 
-[SECTION_1: Title in {language}]
-Write 200-250 words. First main point. Real examples.
-Reference something Indian audience relates to.
-End with a teaser for next section.
+[SECTION_1: {{Interesting title in {language}}}]
+(Write 200+ words. First main point explained in detail.
+Give a specific real-world EXAMPLE from India.
+Use numbers and statistics. Compare to something relatable.
+"ఇది ఎంత పెద్దది అంటే..." / "ये कितना बड़ा है..."
+End with curiosity for next section: "కానీ ఇది మొదటి భాగం మాత్రమే...")
 
-[SECTION_2: Title in {language}]
-Write 200-250 words. Go deeper. Include surprising twist.
-Use comparisons. Must work as standalone short.
+[SECTION_2: {{Interesting title in {language}}}]
+(Write 200+ words. Second point — go DEEPER.
+Reveal something surprising or counter-intuitive.
+Tell a mini-story or case study. Make it dramatic.
+"మీరు నమ్మరు కానీ..." / "आप विश्वास नहीं करेंगे लेकिन..."
+Include a "but here's the twist" moment.)
 
-[SECTION_3: Title in {language}]
-Write 200-250 words. Human/emotional angle.
-How does this affect people in India?
+[SECTION_3: {{Interesting title in {language}}}]
+(Write 200+ words. The HUMAN angle.
+How does this affect normal people in India?
+Give a relatable everyday example.
+Connect to Indian culture, daily life, cities.
+Make the viewer feel personally connected.)
 
-[SECTION_4: Title in {language}]
-Write 200-250 words. CLIMAX — most mind-blowing revelation.
-Save the BEST fact for this section.
+[SECTION_4: {{Interesting title in {language}}}]
+(Write 200+ words. THE CLIMAX — most mind-blowing revelation.
+Save the absolute BEST fact or insight for here.
+Build tension, then reveal. Make viewers say "WOW!"
+This section should be the most exciting and surprising.)
 
 [CTA]
-Write 100-150 words. Summary + subscribe call.
-Tease next video. End with memorable line.
+(Write 100+ words. Summarize 3 key takeaways as bullet points.
+Warm call to subscribe: "ఈ వీడియో నచ్చితే subscribe చేయండి"
+Tease next video topic to create anticipation.
+End with a memorable one-liner they'll remember.)
 
-Add [VISUAL: description] tags (2-3 per section).
-Use rhetorical questions every 2-3 sentences.
-Include at least 5 specific numbers/statistics.
+IMPORTANT RULES:
+- Every section MUST have [VISUAL: description] tags (2-3 per section)
+- Ask rhetorical questions every 3-4 sentences to maintain engagement
+- Include at least 8 specific numbers/facts/statistics across the script
+- Reference Indian context: cities, cricket, Bollywood, festivals, food
+- Use dramatic pauses: "..." before big reveals
+- Each section must START with its own mini-hook sentence
+- Total script MUST be over 1200 words
 
-REMEMBER: MINIMUM {target_words} WORDS TOTAL. This is very important.
-
-Return ONLY the script text."""
+Write ONLY the script. No explanations before or after.
+REMEMBER: MINIMUM 1200 WORDS. Write MORE content, not less."""
 
         script = self._call_ai(prompt)
-        
         word_count = len(script.split())
         logger.info(f"   ✅ Script generated: {word_count} words")
-        
+
+        # If script is too short, ask for expansion
+        if word_count < 800:
+            logger.info(f"   🔄 Script too short ({word_count} words), requesting expansion...")
+
+            expand_prompt = f"""The following {language} script is only {word_count} words.
+It needs to be at least 1200 words for a 10-minute YouTube video.
+
+EXPAND each section with:
+- More detailed explanations and examples
+- Additional examples from India
+- More rhetorical questions
+- More statistics and facts
+- Longer descriptions and stories
+- More emotional engagement
+
+Keep the same [HOOK], [SECTION_1], etc. markers.
+Keep the same {language} language.
+
+ORIGINAL SCRIPT:
+{script}
+
+Write the EXPANDED version (minimum 1200 words):"""
+
+            expanded = self._call_ai(expand_prompt)
+            expanded_count = len(expanded.split())
+
+            if expanded_count > word_count:
+                script = expanded
+                logger.info(f"   ✅ Expanded to {expanded_count} words")
+            else:
+                logger.info(f"   ⚠️ Expansion didn't help ({expanded_count} words)")
+
         return script
 
-
-    # =============================================
-    # SCRIPT REVIEW
-    # =============================================
-    
     def review_script(self, script, language, topic):
-        """AI reviews and improves the script"""
-        
         logger.info(f"🧠 STEP: AI reviewing script quality...")
-        
+
         prompt = f"""Review this {language} YouTube script about "{topic}".
 
 SCRIPT:
@@ -473,39 +378,28 @@ If overall_score < 7, include revised_script with fixes."""
             review = self._call_ai(prompt, expect_json=True)
         except Exception as e:
             logger.warning(f"   ⚠️ Review failed: {e}")
-            logger.info(f"   ↪️ Using script without review")
             review = {
-                "overall_score": 7,
-                "approved": True,
-                "scores": {},
-                "improvements": [],
+                "overall_score": 7, "approved": True,
+                "scores": {}, "improvements": [],
                 "summary": "Review skipped due to API error"
             }
-        
+
         score = review.get('overall_score', 7)
         logger.info(f"   📊 Review score: {score}/10")
-        
+
         final_script = script
-        
         if review.get('revised_script') and score < 6:
             logger.info(f"   🔄 Using revised script")
             final_script = review['revised_script']
-        
+
         return final_script, review
 
-
-    # =============================================
-    # METADATA GENERATION
-    # =============================================
-    
     def generate_metadata(self, topic_data, language, video_type="long"):
-        """Generate title, description, tags"""
-        
         topic = topic_data.get('topic', '')
         topic_local = topic_data.get('topic_local', topic)
-        
+
         logger.info(f"🧠 Generating {video_type} metadata...")
-        
+
         if video_type == "long":
             prompt = f"""Generate YouTube video metadata in {language}.
 
@@ -538,34 +432,26 @@ Return JSON:
             metadata = self._call_ai(prompt, expect_json=True)
         except Exception as e:
             logger.warning(f"   ⚠️ Metadata generation failed: {e}")
-            # Fallback metadata
             metadata = {
                 "title": topic_local or topic,
                 "title_english": topic,
                 "description": f"Video about {topic}",
                 "tags": [topic, language, "facts", "shorts"],
-                "thumbnail_text": topic_local[:20] if topic_local else topic[:20]
+                "thumbnail_text": (topic_local or topic)[:20]
             }
-        
+
         if video_type == "short":
             tags = metadata.get('tags', [])
             if not any('#shorts' in str(t).lower() for t in tags):
                 tags.append('#shorts')
             metadata['tags'] = tags
-        
+
         logger.info(f"   ✅ Title: {metadata.get('title', 'N/A')[:50]}...")
         return metadata
 
-
-    # =============================================
-    # FOOTAGE KEYWORDS
-    # =============================================
-    
     def get_footage_keywords(self, script):
-        """Extract visual keywords for stock footage"""
-        
         logger.info(f"🧠 Extracting footage keywords...")
-        
+
         prompt = f"""From this script, extract 15 ENGLISH keywords for stock footage search.
 
 SCRIPT (first 2000 chars):
@@ -586,32 +472,22 @@ Example: ["satellite orbiting earth", "neural network", "ocean waves"]"""
                 "data visualization", "laboratory", "innovation",
                 "futuristic", "education"
             ]
-        
+
         logger.info(f"   ✅ {len(keywords)} footage keywords")
         return keywords
 
-
-    # =============================================
-    # SECTION PARSER
-    # =============================================
-    
     def parse_script_sections(self, script):
-        """Parse script into sections"""
-        
         logger.info(f"🧠 Parsing script sections...")
-        
+
         sections = []
         current_section = None
         current_text = []
-        
+
         for line in script.split('\n'):
             line = line.strip()
-            
             section_match = re.match(
-                r'\[(HOOK|SECTION_\d+|CTA)(?::\s*(.+?))?\]',
-                line
+                r'\[(HOOK|SECTION_\d+|CTA)(?::\s*(.+?))?\]', line
             )
-            
             if section_match:
                 if current_section is not None:
                     sections.append({
@@ -620,7 +496,6 @@ Example: ["satellite orbiting earth", "neural network", "ocean waves"]"""
                         'text': '\n'.join(current_text).strip(),
                         'is_short_candidate': current_section['marker'] not in ['CTA']
                     })
-                
                 current_section = {
                     'marker': section_match.group(1),
                     'title': section_match.group(2) or section_match.group(1)
@@ -628,7 +503,7 @@ Example: ["satellite orbiting earth", "neural network", "ocean waves"]"""
                 current_text = []
             elif line and not line.startswith('[VISUAL'):
                 current_text.append(line)
-        
+
         if current_section and current_text:
             sections.append({
                 'marker': current_section['marker'],
@@ -636,13 +511,10 @@ Example: ["satellite orbiting earth", "neural network", "ocean waves"]"""
                 'text': '\n'.join(current_text).strip(),
                 'is_short_candidate': current_section['marker'] not in ['CTA']
             })
-        
-        # If no sections found (script didn't have markers),
-        # split into chunks
+
         if not sections:
             logger.warning("   ⚠️ No section markers found, splitting by paragraphs")
             paragraphs = [p.strip() for p in script.split('\n\n') if p.strip()]
-            
             if len(paragraphs) >= 4:
                 sections = [
                     {'marker': 'HOOK', 'title': 'Hook',
@@ -650,7 +522,7 @@ Example: ["satellite orbiting earth", "neural network", "ocean waves"]"""
                     {'marker': 'SECTION_1', 'title': 'Part 1',
                      'text': '\n'.join(paragraphs[1:3]), 'is_short_candidate': True},
                     {'marker': 'SECTION_2', 'title': 'Part 2',
-                     'text': '\n'.join(paragraphs[3:5]) if len(paragraphs) > 4 else paragraphs[3] if len(paragraphs) > 3 else '',
+                     'text': '\n'.join(paragraphs[3:5]) if len(paragraphs) > 4 else paragraphs[3],
                      'is_short_candidate': True},
                     {'marker': 'CTA', 'title': 'Ending',
                      'text': paragraphs[-1], 'is_short_candidate': False},
@@ -660,12 +532,12 @@ Example: ["satellite orbiting earth", "neural network", "ocean waves"]"""
                     {'marker': 'HOOK', 'title': 'Content',
                      'text': script, 'is_short_candidate': True}
                 ]
-        
+
         logger.info(f"   ✅ Found {len(sections)} sections:")
         for s in sections:
             wc = len(s['text'].split())
             logger.info(f"      [{s['marker']}] {s['title'][:30]} — {wc} words")
-        
+
         return sections
 
 
