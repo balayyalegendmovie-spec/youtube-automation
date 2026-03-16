@@ -86,10 +86,10 @@ content:
     target_words: 1500
     min_words: 1200
     max_words: 2000
-    resolution_w: 1920
-    resolution_h: 1080
-    fps: 30
-    bitrate: "5000k"
+    resolution_w: 1280
+    resolution_h: 720
+    fps: 15
+    bitrate: "2000k"
     
   shorts:
     max_duration_seconds: 58
