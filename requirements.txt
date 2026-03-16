@@ -18,3 +18,5 @@ imageio>=2.9.0
 imageio-ffmpeg>=0.4.7
 proglog>=0.1.10
 tqdm>=4.0.0
+google-auth>=2.0.0
+google-api-python-client>=2.0.0
