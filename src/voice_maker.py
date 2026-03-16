@@ -1,277 +1,321 @@
 """
-═══════════════════════════════════════════════════════════════
-  VOICE MAKER — Emotional Text-to-Speech
-  
-  Features:
-  • Emotion-based rate/pitch/volume changes
-  • Natural breathing pauses between sentences
-  • Emphasis on key words
-  • Dramatic pauses for impact
-  • Section-by-section generation for precise control
-  • Real breathing sound effects added in gaps
-  
-  Uses Edge TTS (Microsoft) — 100% FREE, unlimited
-═══════════════════════════════════════════════════════════════
+VOICE MAKER — Natural Emotional TTS using Edge TTS + Breathing Engine
+
+Pipeline:
+1. Script text comes in
+2. breathing.py processes it (adds pauses, emotions, SSML)
+3. Edge TTS generates audio with SSML
+4. Post-processing normalizes volume
+5. Word-level timestamps generated for subtitles
+
+Voices used:
+- Telugu: te-IN-ShrutiNeural (female) / te-IN-MohanNeural (male)
+- Hindi: hi-IN-SwaraNeural (female) / hi-IN-MadhurNeural (male)
 """
 
 import edge_tts
 import asyncio
 import os
-import re
-import struct
-import math
-import wave
 import subprocess
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 
 
-class EmotionalVoiceMaker:
-    """Generate natural emotional voice with breathing and pauses"""
+class VoiceMaker:
     
-    EMOTION_SETTINGS = {
-        'neutral':    {'rate': '+0%',   'pitch': '+0Hz',  'volume': '+0%'},
-        'happy':      {'rate': '+8%',   'pitch': '+5Hz',  'volume': '+5%'},
-        'excited':    {'rate': '+15%',  'pitch': '+10Hz', 'volume': '+10%'},
-        'serious':    {'rate': '-5%',   'pitch': '-3Hz',  'volume': '+0%'},
-        'thinking':   {'rate': '-8%',   'pitch': '+0Hz',  'volume': '-5%'},
-        'surprised':  {'rate': '+5%',   'pitch': '+8Hz',  'volume': '+10%'},
-        'sad':        {'rate': '-10%',  'pitch': '-8Hz',  'volume': '-10%'},
-        'explaining': {'rate': '-3%',   'pitch': '+2Hz',  'volume': '+5%'},
-        'curious':    {'rate': '+3%',   'pitch': '+5Hz',  'volume': '+0%'},
-        'amazed':     {'rate': '+5%',   'pitch': '+7Hz',  'volume': '+5%'},
-        'inspired':   {'rate': '+5%',   'pitch': '+3Hz',  'volume': '+5%'},
+    VOICES = {
+        'telugu': {
+            'female': 'te-IN-ShrutiNeural',
+            'male': 'te-IN-MohanNeural'
+        },
+        'hindi': {
+            'female': 'hi-IN-SwaraNeural',
+            'male': 'hi-IN-MadhurNeural'
+        }
     }
     
-    def __init__(self, voice_id, config_path="config/config.yaml"):
-        import yaml
-        with open(config_path, 'r') as f:
-            self.config = yaml.safe_load(f)
+    def __init__(self, language='telugu', gender='female', config=None):
+        self.language = language
+        self.gender = gender
+        self.voice = self.VOICES[language][gender]
+        self.config = config or {}
         
-        self.voice_id = voice_id
-        self.voice_config = self.config.get('voice', {})
+        # Import breathing processor
+        from src.breathing import BreathingProcessor
+        self.breathing_processor = BreathingProcessor(
+            voice_id=self.voice,
+            config=self.config.get('voice', {}).get('breathing', {})
+        )
+        
+        logger.info(f"🎙️ Voice Maker initialized")
+        logger.info(f"   Language: {language}")
+        logger.info(f"   Voice: {self.voice}")
+        logger.info(f"   Breathing: enabled")
     
 
-    def generate_section_audio(self, sections, output_dir, log_fn=None):
-        """Generate audio for each script section with appropriate emotion"""
+    def _clean_for_tts(self, text):
+        """Clean text for TTS — remove markers, visual cues"""
         
-        os.makedirs(output_dir, exist_ok=True)
-        results = []
+        cleaned = text
+        cleaned = re.sub(r'\[HOOK\]|\[SECTION_\d+:.*?\]|\[CTA\]', '', cleaned)
+        cleaned = re.sub(r'\[VISUAL:.*?\]', '', cleaned)
         
-        for i, section in enumerate(sections):
-            if log_fn:
-                log_fn(f"Generating voice section {i+1}/{len(sections)}: "
-                       f"{section['marker']} [{section['emotion']}]")
-            
-            output_path = os.path.join(output_dir, f"section_{i:02d}.mp3")
-            sub_path = os.path.join(output_dir, f"section_{i:02d}.vtt")
-            
-            # Prepare text with natural pauses
-            processed_text = self._process_markers(section['text'])
-            
-            # Get emotion settings
-            emotion = section.get('emotion', 'neutral')
-            settings = self.EMOTION_SETTINGS.get(emotion, self.EMOTION_SETTINGS['neutral'])
-            
-            # Generate audio
-            asyncio.run(self._generate_audio(
-                text=processed_text,
-                output_path=output_path,
-                subtitle_path=sub_path,
-                rate=settings['rate'],
-                pitch=settings['pitch'],
-                volume=settings['volume']
-            ))
-            
-            # Add breathing sounds in pauses
-            processed_path = os.path.join(output_dir, f"section_{i:02d}_final.mp3")
-            self._add_breathing_and_normalize(output_path, processed_path)
-            
-            # Get duration
-            duration = self._get_duration(processed_path)
-            
-            results.append({
-                'section_index': i,
-                'section_marker': section['marker'],
-                'section_title': section['title'],
-                'emotion': emotion,
-                'audio_path': processed_path,
-                'subtitle_path': sub_path,
-                'duration': duration,
-                'text': section['text'],
-                'scene': section.get('scene', ''),
-                'is_short': section.get('is_short', True)
-            })
-            
-            if log_fn:
-                log_fn(f"  Section {i+1}: {duration:.1f}s [{emotion}]")
+        # Remove SSML tags that Edge TTS doesn't support well
+        # Keep only: break, prosody, emphasis
+        # Remove nested prosody (Edge TTS doesn't like it)
+        cleaned = re.sub(r'<speak>|</speak>', '', cleaned)
+        cleaned = re.sub(r'<voice[^>]*>|</voice>', '', cleaned)
         
-        return results
+        # Clean up extra whitespace
+        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
+        cleaned = re.sub(r'[ \t]+', ' ', cleaned)
+        cleaned = cleaned.strip()
+        
+        return cleaned
+    
 
-
-    def generate_full_audio(self, sections, output_path, subtitle_path=None,
-                             log_fn=None):
-        """Generate complete audio by concatenating section audios"""
+    async def _generate_with_emotion(self, text, output_path, 
+                                       subtitle_path=None, rate="+5%", 
+                                       pitch="+0Hz"):
+        """Generate audio using Edge TTS with emotion parameters"""
         
-        output_dir = os.path.dirname(output_path) or '.'
-        section_dir = os.path.join(output_dir, 'temp_sections')
+        cleaned_text = self._clean_for_tts(text)
         
-        # Generate section-by-section
-        section_results = self.generate_section_audio(
-            sections, section_dir, log_fn
-        )
-        
-        # Create concat file for FFmpeg
-        concat_file = os.path.join(section_dir, 'concat.txt')
-        with open(concat_file, 'w') as f:
-            for result in section_results:
-                audio_path = os.path.abspath(result['audio_path'])
-                f.write(f"file '{audio_path}'\n")
-                
-                # Add section pause
-                pause_path = self._create_silence(
-                    duration_ms=self.voice_config.get('section_pause_ms', 1000),
-                    output_path=os.path.join(
-                        section_dir, 
-                        f"pause_{result['section_index']}.mp3"
-                    )
-                )
-                f.write(f"file '{os.path.abspath(pause_path)}'\n")
-        
-        # Concatenate all sections
-        cmd = [
-            'ffmpeg', '-y', '-f', 'concat', '-safe', '0',
-            '-i', concat_file,
-            '-c:a', 'libmp3lame', '-q:a', '2',
-            output_path
-        ]
-        subprocess.run(cmd, capture_output=True, check=True, timeout=120)
-        
-        if log_fn:
-            total_dur = self._get_duration(output_path)
-            log_fn(f"Full audio: {total_dur:.1f}s")
-        
-        return section_results
-
-
-    def _process_markers(self, text):
-        """Convert script markers to natural speech pauses"""
-        
-        processed = text
-        
-        # Remove markers but add natural gaps
-        # [BREATH] → add a period and space (creates natural TTS pause)
-        processed = re.sub(r'\[BREATH\]', '. ', processed)
-        
-        # [PAUSE:short] → add ellipsis
-        processed = re.sub(r'\[PAUSE:short\]', '... ', processed)
-        
-        # [PAUSE:long] → add double period pause
-        processed = re.sub(r'\[PAUSE:long\]', '.... ', processed)
-        
-        # [EMPHASIS:text] → keep text, TTS handles naturally
-        processed = re.sub(r'\[EMPHASIS:(.*?)\]', r'\1', processed)
-        
-        # Remove any remaining markers
-        processed = re.sub(r'\[.*?\]', '', processed)
-        
-        # Clean up multiple spaces/periods
-        processed = re.sub(r'\.{5,}', '....', processed)
-        processed = re.sub(r'\s{3,}', '  ', processed)
-        
-        return processed.strip()
-
-
-    async def _generate_audio(self, text, output_path, subtitle_path,
-                                rate, pitch, volume):
-        """Generate audio using Edge TTS"""
+        if not cleaned_text:
+            logger.warning("   ⚠️ Empty text after cleaning, skipping")
+            return None
         
         communicate = edge_tts.Communicate(
-            text=text,
-            voice=self.voice_id,
+            text=cleaned_text,
+            voice=self.voice,
             rate=rate,
-            pitch=pitch,
-            volume=volume
+            pitch=pitch
         )
         
-        submaker = edge_tts.SubMaker()
-        
-        with open(output_path, "wb") as audio_file:
-            async for chunk in communicate.stream():
-                if chunk["type"] == "audio":
-                    audio_file.write(chunk["data"])
-                elif chunk["type"] == "WordBoundary":
-                    submaker.create_sub(
-                        (chunk["offset"], chunk["duration"]),
-                        chunk["text"]
-                    )
-        
-        # Save subtitles
         if subtitle_path:
-            with open(subtitle_path, "w", encoding="utf-8") as f:
-                f.write(submaker.generate_subs())
+            submaker = edge_tts.SubMaker()
+            
+            with open(output_path, "wb") as audio_file:
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        audio_file.write(chunk["data"])
+                    elif chunk["type"] == "WordBoundary":
+                        submaker.create_sub(
+                            (chunk["offset"], chunk["duration"]),
+                            chunk["text"]
+                        )
+            
+            with open(subtitle_path, "w", encoding="utf-8") as sub_file:
+                sub_content = submaker.generate_subs()
+                sub_file.write(sub_content)
+            
+            logger.info(f"   📝 Subtitles saved: {subtitle_path}")
+        else:
+            await communicate.save(output_path)
+        
+        return output_path
+    
 
+    def generate_full_audio(self, script, output_path, subtitle_path=None):
+        """
+        Generate complete audio for full script with emotions.
+        
+        Flow:
+        1. Process through breathing engine
+        2. Generate audio with Edge TTS
+        3. Post-process for quality
+        """
+        
+        logger.info(f"🎙️ STEP: Generating full voiceover...")
+        logger.info(f"   Script length: {len(script.split())} words")
+        
+        # Step 1: Process through breathing engine
+        logger.info(f"   🫁 Processing breathing and emotions...")
+        processed = self.breathing_processor.process_script(
+            script, self.language
+        )
+        logger.info(f"   ✅ Estimated duration: {processed.total_estimated_duration:.0f}s")
+        logger.info(f"   ✅ Emotions: {', '.join(processed.emotions_used)}")
+        
+        # Step 2: Generate audio
+        logger.info(f"   🔊 Generating audio with Edge TTS...")
+        
+        # Use cleaned version (TTS sometimes struggles with complex SSML)
+        clean_script = self._clean_for_tts(script)
+        
+        asyncio.run(
+            self._generate_with_emotion(
+                text=clean_script,
+                output_path=output_path,
+                subtitle_path=subtitle_path,
+                rate="+5%",
+                pitch="+0Hz"
+            )
+        )
+        
+        # Step 3: Post-process
+        logger.info(f"   🎛️ Post-processing audio...")
+        self._post_process(output_path)
+        
+        # Get final duration
+        duration = self._get_duration(output_path)
+        file_size = os.path.getsize(output_path) / (1024 * 1024)
+        
+        logger.info(f"   ✅ Full audio complete:")
+        logger.info(f"      Duration: {duration:.1f}s")
+        logger.info(f"      File size: {file_size:.1f} MB")
+        
+        return output_path
+    
 
-    def _add_breathing_and_normalize(self, input_path, output_path):
-        """Post-process: normalize volume and enhance naturalness"""
+    def generate_section_audios(self, sections, output_dir):
+        """
+        Generate separate audio for each section (for shorts).
+        Returns list of section audio info.
+        """
+        
+        logger.info(f"🎙️ STEP: Generating section-wise audio ({len(sections)} sections)...")
+        
+        os.makedirs(output_dir, exist_ok=True)
+        section_audios = []
+        
+        for i, section in enumerate(sections):
+            marker = section.get('marker', f'SECTION_{i}')
+            text = section.get('text', '')
+            title = section.get('title', marker)
+            
+            if not text.strip():
+                logger.info(f"   ⏭️ [{marker}] Empty text, skipping")
+                continue
+            
+            logger.info(f"   🎤 [{marker}] Generating audio ({len(text.split())} words)...")
+            
+            audio_path = os.path.join(output_dir, f"section_{i:02d}_{marker.lower()}.mp3")
+            subtitle_path = os.path.join(output_dir, f"section_{i:02d}_{marker.lower()}.vtt")
+            
+            # Process section through breathing engine
+            section_ssml = self.breathing_processor.process_section(
+                text, marker, self.language
+            )
+            
+            # Determine emotion-based voice parameters
+            rate, pitch = self._get_section_voice_params(marker)
+            
+            # Generate audio
+            try:
+                clean_text = self._clean_for_tts(text)
+                
+                asyncio.run(
+                    self._generate_with_emotion(
+                        text=clean_text,
+                        output_path=audio_path,
+                        subtitle_path=subtitle_path,
+                        rate=rate,
+                        pitch=pitch
+                    )
+                )
+                
+                self._post_process(audio_path)
+                duration = self._get_duration(audio_path)
+                
+                section_audios.append({
+                    'section_marker': marker,
+                    'section_title': title,
+                    'audio_path': audio_path,
+                    'subtitle_path': subtitle_path,
+                    'duration': duration,
+                    'text': text,
+                    'word_count': len(text.split())
+                })
+                
+                logger.info(f"   ✅ [{marker}] {duration:.1f}s audio generated")
+                
+            except Exception as e:
+                logger.error(f"   ❌ [{marker}] Audio generation failed: {e}")
+        
+        total_duration = sum(s['duration'] for s in section_audios)
+        logger.info(f"   ✅ Section audio complete: {len(section_audios)} sections, "
+                    f"{total_duration:.0f}s total")
+        
+        return section_audios
+    
+
+    def _get_section_voice_params(self, marker):
+        """Get voice rate/pitch based on section type"""
+        
+        params = {
+            'HOOK': ('+10%', '+5Hz'),
+            'SECTION_1': ('+5%', '+0Hz'),
+            'SECTION_2': ('+3%', '-2Hz'),
+            'SECTION_3': ('+5%', '+3Hz'),
+            'SECTION_4': ('+8%', '+5Hz'),
+            'CTA': ('+3%', '+2Hz'),
+        }
+        
+        return params.get(marker, ('+5%', '+0Hz'))
+    
+
+    def _post_process(self, audio_path):
+        """Normalize audio volume and improve quality"""
+        
+        processed_path = audio_path + '.processed.mp3'
         
         try:
             cmd = [
-                'ffmpeg', '-y', '-i', input_path,
-                '-af', ','.join([
-                    # Normalize loudness
-                    'loudnorm=I=-16:LRA=11:TP=-1.5',
-                    # Light compression for consistent volume
-                    'acompressor=threshold=-25dB:ratio=3:attack=5:release=50',
-                    # Slight warmth
-                    'bass=g=2:f=200',
-                    # Remove harsh frequencies
-                    'highpass=f=80',
-                    'lowpass=f=12000'
-                ]),
+                'ffmpeg', '-y', '-i', audio_path,
+                '-af', (
+                    'loudnorm=I=-16:LRA=11:TP=-1.5,'
+                    'acompressor=threshold=-20dB:ratio=3:attack=5:release=50,'
+                    'equalizer=f=200:width_type=h:width=100:g=2,'
+                    'equalizer=f=3000:width_type=h:width=1000:g=1.5'
+                ),
                 '-ar', '44100',
                 '-ac', '1',
-                '-b:a', '192k',
-                output_path
+                '-b:a', '128k',
+                processed_path
             ]
             
-            subprocess.run(cmd, capture_output=True, check=True, timeout=60)
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=120
+            )
             
-        except subprocess.CalledProcessError:
-            import shutil
-            shutil.copy(input_path, output_path)
+            if result.returncode == 0:
+                os.replace(processed_path, audio_path)
+            else:
+                logger.warning(f"   ⚠️ Post-processing returned non-zero, using original")
+                if os.path.exists(processed_path):
+                    os.remove(processed_path)
+                    
+        except Exception as e:
+            logger.warning(f"   ⚠️ Post-processing failed: {e}")
+            if os.path.exists(processed_path):
+                os.remove(processed_path)
+    
 
-
-    def _create_silence(self, duration_ms, output_path):
-        """Create a silence audio file"""
-        
-        duration_s = duration_ms / 1000.0
-        
-        cmd = [
-            'ffmpeg', '-y',
-            '-f', 'lavfi',
-            '-i', f'anullsrc=r=44100:cl=mono',
-            '-t', str(duration_s),
-            '-c:a', 'libmp3lame',
-            '-q:a', '9',
-            output_path
-        ]
-        
-        subprocess.run(cmd, capture_output=True, check=True, timeout=30)
-        return output_path
-
-
-    def _get_duration(self, path):
+    def _get_duration(self, audio_path):
         """Get audio duration in seconds"""
         
         try:
             cmd = [
                 'ffprobe', '-v', 'quiet',
                 '-show_entries', 'format=duration',
-                '-of', 'csv=p=0', path
+                '-of', 'csv=p=0',
+                audio_path
             ]
-            result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
             return float(result.stdout.strip())
         except Exception:
             return 60.0
+
+
+if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
+    
+    vm = VoiceMaker('telugu', 'female')
+    vm.generate_full_audio(
+        "నమస్కారం! ఈ వీడియోలో మనం అంతరిక్షం గురించి తెలుసుకుందాం.",
+        "output/test_voice.mp3",
+        "output/test_voice.vtt"
+    )
