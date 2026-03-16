@@ -1,1 +1,39 @@
+name: "Priya"
+description: "A young Indian woman anime character, energetic and smart"
 
+base_prompt: >
+  1girl, solo, anime style, young Indian woman,
+  dark brown eyes, medium length black hair with side part,
+  wearing a stylish red and white top,
+  warm brown skin tone, confident expression,
+  upper body portrait, clean background,
+  high quality, detailed anime art style,
+  vibrant colors, modern anime style,
+  masterpiece, best quality
+
+negative_prompt: >
+  nsfw, nude, ugly, deformed, bad anatomy,
+  bad hands, extra fingers, blurry, low quality,
+  watermark, text, signature, western cartoon style,
+  3d render, realistic photo
+
+expressions:
+  neutral: "neutral confident expression, slight smile"
+  happy: "bright happy smile, sparkling eyes, joyful"
+  excited: "very excited, pumped up fist, huge smile, dynamic pose"
+  serious: "serious analytical expression, focused eyes"
+  thinking: "thoughtful pose, finger on lip, curious look"
+  surprised: "shocked expression, hands on cheeks, wide eyes"
+  sad: "empathetic sad expression, gentle concerned look"
+  explaining: "pointing gesture, teacher pose, animated expression"
+
+backgrounds:
+  technology: "cyberpunk city background, neon lights, futuristic India"
+  space: "deep space background, galaxy, astronaut elements"
+  history: "Mughal era architecture background, intricate designs"
+  science: "particle physics lab background, atom models, equations"
+  nature: "Himalayan mountain background, prayer flags, sunrise"
+  finance: "bustling stock exchange background, green numbers"
+  default: "clean gradient background, warm orange and red tones"
+
+seed: 77
