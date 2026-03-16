@@ -1,233 +1,192 @@
 """
-FILE BACKUP — Uploads generated videos to GitHub Releases
-No extra setup needed! Uses the existing GITHUB_TOKEN.
-
-Each pipeline run creates a GitHub Release with:
-  - Long-form video
-  - All shorts
-  - All thumbnails
-  - Script text
-
-Files are downloadable from the Releases page.
-Free, unlimited, no quota issues.
+GOOGLE DRIVE UPLOADER — OAuth2 based (works with personal Gmail)
 """
 
 import os
 import json
 import logging
-import subprocess
 from datetime import datetime
+import requests as http_requests
 
 logger = logging.getLogger(__name__)
 
+TOKEN_URL = "https://oauth2.googleapis.com/token"
+UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
+FILES_URL = "https://www.googleapis.com/drive/v3/files"
+
 
 class DriveUploader:
-    """
-    Despite the name, this uploads to GitHub Releases.
-    Kept same class name so main.py doesn't need changes.
-    """
 
     def __init__(self):
-        self.github_token = os.environ.get('GITHUB_TOKEN', '')
-        self.repo = os.environ.get('GITHUB_REPOSITORY', '')
-        self.is_github = os.environ.get('GITHUB_ACTIONS') == 'true'
+        self.folder_id = os.environ.get('GDRIVE_FOLDER_ID', '')
+        self.refresh_token = os.environ.get('GDRIVE_REFRESH_TOKEN', '')
+        self.client_id = os.environ.get('GDRIVE_CLIENT_ID', '')
+        self.client_secret = os.environ.get('GDRIVE_CLIENT_SECRET', '')
+        self.access_token = None
 
-        if self.is_github and self.repo:
-            self.enabled = True
-            logger.info("☁️ GitHub Release uploader initialized")
-        else:
-            # Try Google Drive as fallback
-            self.refresh_token = os.environ.get('GDRIVE_REFRESH_TOKEN', '')
-            self.client_id = os.environ.get('GDRIVE_CLIENT_ID', '')
-            self.client_secret = os.environ.get('GDRIVE_CLIENT_SECRET', '')
-            self.folder_id = os.environ.get('GDRIVE_FOLDER_ID', '')
+        if not all([self.refresh_token, self.client_id, self.client_secret, self.folder_id]):
+            # Fallback to GitHub Releases
+            self.github_token = os.environ.get('GITHUB_TOKEN', '')
+            self.repo = os.environ.get('GITHUB_REPOSITORY', '')
+            self.is_github = os.environ.get('GITHUB_ACTIONS') == 'true'
 
-            if self.refresh_token and self.client_id and self.folder_id:
+            if self.is_github and self.repo and self.github_token:
                 self.enabled = True
-                self.use_drive = True
-                logger.info("☁️ Google Drive uploader initialized")
+                self.use_drive = False
+                logger.info("☁️ Backup: GitHub Releases (Drive not configured)")
             else:
                 self.enabled = False
                 self.use_drive = False
-                logger.info("☁️ Backup disabled (not in GitHub Actions)")
-                return
+                logger.info("☁️ Backup disabled")
+            return
 
-        self.use_drive = False
+        self.enabled = True
+        self.use_drive = True
+        logger.info("☁️ Google Drive uploader ready (OAuth2)")
 
-    def _create_github_release(self, tag, title):
-        """Create a GitHub Release"""
+    def _get_token(self):
+        if self.access_token:
+            return self.access_token
         try:
-            import requests
+            resp = http_requests.post(TOKEN_URL, data={
+                'client_id': self.client_id,
+                'client_secret': self.client_secret,
+                'refresh_token': self.refresh_token,
+                'grant_type': 'refresh_token'
+            }, timeout=15)
+            if resp.status_code == 200:
+                self.access_token = resp.json().get('access_token')
+                logger.info("   ✅ Drive token obtained")
+                return self.access_token
+            logger.error(f"   ❌ Token failed: {resp.status_code} {resp.text[:200]}")
+            return None
+        except Exception as e:
+            logger.error(f"   ❌ Token error: {e}")
+            return None
 
-            url = f"https://api.github.com/repos/{self.repo}/releases"
+    def _headers(self):
+        token = self._get_token()
+        return {'Authorization': f'Bearer {token}'} if token else None
+
+    def _create_folder(self, name, parent_id=None):
+        headers = self._headers()
+        if not headers:
+            return None
+        try:
+            resp = http_requests.post(FILES_URL,
+                headers={**headers, 'Content-Type': 'application/json'},
+                json={'name': name, 'mimeType': 'application/vnd.google-apps.folder',
+                      'parents': [parent_id or self.folder_id]},
+                timeout=15)
+            if resp.status_code == 200:
+                fid = resp.json().get('id')
+                logger.info(f"   📁 Folder: {name}")
+                return fid
+            logger.error(f"   ❌ Folder failed: {resp.status_code}")
+            return None
+        except Exception as e:
+            logger.error(f"   ❌ Folder error: {e}")
+            return None
+
+    def _upload_file(self, file_path, parent_id, custom_name=None):
+        headers = self._headers()
+        if not headers or not os.path.exists(file_path):
+            return None
+
+        name = custom_name or os.path.basename(file_path)
+        size = os.path.getsize(file_path)
+        size_mb = size / (1024 * 1024)
+
+        ext = os.path.splitext(file_path)[1].lower()
+        mimes = {'.mp4': 'video/mp4', '.mp3': 'audio/mpeg',
+                 '.jpg': 'image/jpeg', '.png': 'image/png',
+                 '.txt': 'text/plain', '.json': 'application/json',
+                 '.srt': 'text/plain'}
+        mime = mimes.get(ext, 'application/octet-stream')
+
+        try:
+            init = http_requests.post(f"{UPLOAD_URL}?uploadType=resumable",
+                headers={**headers,
+                         'Content-Type': 'application/json; charset=UTF-8',
+                         'X-Upload-Content-Type': mime,
+                         'X-Upload-Content-Length': str(size)},
+                json={'name': name, 'parents': [parent_id]},
+                timeout=15)
+
+            if init.status_code != 200:
+                logger.error(f"   ❌ Init failed: {init.status_code} {init.text[:200]}")
+                return None
+
+            upload_url = init.headers.get('Location')
+            if not upload_url:
+                return None
+
+            with open(file_path, 'rb') as f:
+                up = http_requests.put(upload_url,
+                    headers={'Content-Type': mime},
+                    data=f.read(), timeout=600)
+
+            if up.status_code in [200, 201]:
+                file_id = up.json().get('id', '')
+                link = f"https://drive.google.com/file/d/{file_id}/view"
+                logger.info(f"   ☁️ Uploaded: {name} ({size_mb:.1f} MB)")
+                return {'id': file_id, 'name': name, 'size_mb': round(size_mb, 1), 'link': link}
+            else:
+                logger.error(f"   ❌ Upload failed: {up.status_code} {up.text[:200]}")
+                return None
+        except Exception as e:
+            logger.error(f"   ❌ Upload error {name}: {e}")
+            return None
+
+    def _github_release_upload(self, topic, language, all_files):
+        """Fallback: GitHub Releases"""
+        try:
+            safe = "".join(c for c in topic[:20] if c.isalnum() or c in '-_').strip()
+            tag = f"v{datetime.now().strftime('%Y%m%d-%H%M')}-{safe}"
+            title = f"📹 {language.upper()}: {topic[:50]}"
+
             headers = {
                 'Authorization': f'token {self.github_token}',
                 'Accept': 'application/vnd.github.v3+json'
             }
 
-            data = {
-                'tag_name': tag,
-                'name': title,
-                'body': f'Auto-generated content from YouTube Automation Bot\n\nCreated: {datetime.now().isoformat()}',
-                'draft': False,
-                'prerelease': False
-            }
+            # Create release
+            resp = http_requests.post(
+                f"https://api.github.com/repos/{self.repo}/releases",
+                headers=headers,
+                json={'tag_name': tag, 'name': title, 'body': f'Generated: {datetime.now().isoformat()}',
+                      'draft': False, 'prerelease': False},
+                timeout=15)
 
-            # Create tag first
-            try:
-                tag_url = f"https://api.github.com/repos/{self.repo}/git/refs"
-                sha_resp = requests.get(
-                    f"https://api.github.com/repos/{self.repo}/git/ref/heads/main",
-                    headers=headers, timeout=10
-                )
-                if sha_resp.status_code == 200:
-                    sha = sha_resp.json().get('object', {}).get('sha', '')
-                    if sha:
-                        requests.post(tag_url, headers=headers, json={
-                            'ref': f'refs/tags/{tag}',
-                            'sha': sha
-                        }, timeout=10)
-            except Exception:
-                pass
-
-            resp = requests.post(url, headers=headers, json=data, timeout=15)
-
-            if resp.status_code == 201:
-                release = resp.json()
-                logger.info(f"   ✅ Release created: {title}")
-                return release.get('id'), release.get('upload_url', '').split('{')[0]
-            elif resp.status_code == 422:
-                # Tag already exists, try with timestamp
-                data['tag_name'] = f"{tag}-{datetime.now().strftime('%H%M%S')}"
-                resp = requests.post(url, headers=headers, json=data, timeout=15)
-                if resp.status_code == 201:
-                    release = resp.json()
-                    return release.get('id'), release.get('upload_url', '').split('{')[0]
-
-            logger.error(f"   ❌ Release creation failed: {resp.status_code} {resp.text[:200]}")
-            return None, None
-
-        except Exception as e:
-            logger.error(f"   ❌ Release error: {e}")
-            return None, None
-
-    def _upload_to_release(self, upload_url, file_path, file_name=None):
-        """Upload file to GitHub Release"""
-        try:
-            import requests
-
-            name = file_name or os.path.basename(file_path)
-            size = os.path.getsize(file_path)
-            size_mb = size / (1024 * 1024)
-
-            ext = os.path.splitext(file_path)[1].lower()
-            content_types = {
-                '.mp4': 'video/mp4',
-                '.mp3': 'audio/mpeg',
-                '.jpg': 'image/jpeg',
-                '.png': 'image/png',
-                '.txt': 'text/plain',
-                '.json': 'application/json',
-            }
-            content_type = content_types.get(ext, 'application/octet-stream')
-
-            url = f"{upload_url}?name={name}"
-            headers = {
-                'Authorization': f'token {self.github_token}',
-                'Content-Type': content_type,
-            }
-
-            with open(file_path, 'rb') as f:
-                data = f.read()
-
-            resp = requests.post(url, headers=headers, data=data, timeout=300)
-
-            if resp.status_code == 201:
-                download_url = resp.json().get('browser_download_url', '')
-                logger.info(f"   ☁️ Uploaded: {name} ({size_mb:.1f} MB)")
-                return {
-                    'name': name,
-                    'size_mb': round(size_mb, 1),
-                    'url': download_url
-                }
-            else:
-                logger.error(f"   ❌ Upload failed {name}: {resp.status_code}")
+            if resp.status_code not in [201]:
                 return None
 
-        except Exception as e:
-            logger.error(f"   ❌ Upload error {file_path}: {e}")
-            return None
+            upload_url = resp.json().get('upload_url', '').split('{')[0]
+            uploaded = []
 
-    def _drive_upload(self, **kwargs):
-        """Fallback: Google Drive OAuth upload"""
-        import requests as http_requests
+            for fp in all_files:
+                if not os.path.exists(fp):
+                    continue
+                name = os.path.basename(fp)
+                size = os.path.getsize(fp)
+                ext = os.path.splitext(fp)[1].lower()
+                ct = {'mp4': 'video/mp4', 'mp3': 'audio/mpeg', 'jpg': 'image/jpeg',
+                      'txt': 'text/plain'}.get(ext.strip('.'), 'application/octet-stream')
 
-        TOKEN_URL = "https://oauth2.googleapis.com/token"
-        UPLOAD_URL = "https://www.googleapis.com/upload/drive/v3/files"
-        FILES_URL = "https://www.googleapis.com/drive/v3/files"
-
-        # Get access token
-        resp = http_requests.post(TOKEN_URL, data={
-            'client_id': self.client_id,
-            'client_secret': self.client_secret,
-            'refresh_token': self.refresh_token,
-            'grant_type': 'refresh_token'
-        }, timeout=15)
-
-        if resp.status_code != 200:
-            logger.error(f"   ❌ Drive token failed")
-            return None
-
-        token = resp.json().get('access_token')
-        headers = {'Authorization': f'Bearer {token}'}
-
-        # Create folder
-        topic = kwargs.get('topic', 'video')
-        language = kwargs.get('language', 'unknown')
-        safe = "".join(c for c in topic[:30] if c.isalnum() or c in ' _-').strip()
-        folder_name = f"{datetime.now().strftime('%Y-%m-%d')}_{language}_{safe}"
-
-        folder_resp = http_requests.post(FILES_URL,
-            headers={**headers, 'Content-Type': 'application/json'},
-            json={'name': folder_name, 'mimeType': 'application/vnd.google-apps.folder',
-                  'parents': [self.folder_id]}, timeout=15)
-
-        if folder_resp.status_code != 200:
-            return None
-
-        folder_id = folder_resp.json().get('id')
-        uploaded = []
-
-        for file_path in kwargs.get('files', []):
-            if not os.path.exists(file_path):
-                continue
-            name = os.path.basename(file_path)
-            size = os.path.getsize(file_path)
-
-            ext = os.path.splitext(file_path)[1].lower()
-            mime = {'mp4': 'video/mp4', 'mp3': 'audio/mpeg', 'jpg': 'image/jpeg',
-                    'txt': 'text/plain'}.get(ext.strip('.'), 'application/octet-stream')
-
-            init = http_requests.post(f"{UPLOAD_URL}?uploadType=resumable",
-                headers={**headers, 'Content-Type': 'application/json; charset=UTF-8',
-                         'X-Upload-Content-Type': mime,
-                         'X-Upload-Content-Length': str(size)},
-                json={'name': name, 'parents': [folder_id]}, timeout=15)
-
-            if init.status_code != 200:
-                continue
-
-            upload_url = init.headers.get('Location')
-            with open(file_path, 'rb') as f:
-                up = http_requests.put(upload_url,
-                    headers={'Content-Type': mime}, data=f.read(), timeout=300)
-                if up.status_code in [200, 201]:
+                with open(fp, 'rb') as f:
+                    ur = http_requests.post(f"{upload_url}?name={name}",
+                        headers={**headers, 'Content-Type': ct},
+                        data=f.read(), timeout=300)
+                if ur.status_code == 201:
                     uploaded.append({'name': name, 'size_mb': round(size/(1024*1024), 1)})
-                    logger.info(f"   ☁️ Drive: {name}")
+                    logger.info(f"   ☁️ Release: {name}")
 
-        link = f"https://drive.google.com/drive/folders/{folder_id}"
-        return {'folder_link': link, 'files': uploaded,
-                'total_size_mb': sum(f['size_mb'] for f in uploaded)}
+            link = f"https://github.com/{self.repo}/releases/tag/{tag}"
+            return {'folder_link': link, 'files': uploaded,
+                    'total_size_mb': sum(f['size_mb'] for f in uploaded)}
+        except Exception as e:
+            logger.error(f"   ❌ GitHub Release failed: {e}")
+            return None
 
     def upload_pipeline_output(self, run_id, language, topic,
                                 long_video_path=None, shorts=None,
@@ -235,10 +194,10 @@ class DriveUploader:
                                 short_thumbnails=None,
                                 script_text=None, output_dir=None):
         if not self.enabled:
-            logger.info("☁️ Backup skipped (not configured)")
+            logger.info("☁️ Backup skipped")
             return None
 
-        logger.info(f"\n☁️ STEP: Backing up generated content...")
+        logger.info(f"\n☁️ STEP: Backing up to {'Google Drive' if self.use_drive else 'GitHub Releases'}...")
 
         # Collect all files
         all_files = []
@@ -256,7 +215,6 @@ class DriveUploader:
                 if tp and os.path.exists(tp):
                     all_files.append(tp)
 
-        # Save script
         if script_text and output_dir:
             sp = os.path.join(output_dir, 'script.txt')
             try:
@@ -268,48 +226,62 @@ class DriveUploader:
             except Exception:
                 pass
 
-        # Try Google Drive first if configured
+        if not all_files:
+            logger.info("   No files to upload")
+            return None
+
+        # Try Google Drive first
         if self.use_drive:
-            try:
-                result = self._drive_upload(
-                    topic=topic, language=language, files=all_files
-                )
-                if result and result.get('files'):
-                    total = result.get('total_size_mb', 0)
-                    logger.info(f"\n   ☁️ Drive backup: {len(result['files'])} files, {total:.1f} MB")
-                    logger.info(f"   🔗 {result.get('folder_link', '')}")
-                    return result
-            except Exception as e:
-                logger.warning(f"   ⚠️ Drive failed: {e}, trying GitHub Releases...")
+            safe = "".join(c for c in topic[:30] if c.isalnum() or c in ' _-').strip()
+            folder_name = f"{datetime.now().strftime('%Y-%m-%d')}_{language}_{safe}"
 
-        # GitHub Releases
-        if not self.is_github:
-            logger.info("   ☁️ Not in GitHub Actions, skipping release")
-            return None
+            root = self._create_folder(folder_name)
+            if root:
+                uploaded = []
 
-        safe_topic = "".join(c for c in topic[:20] if c.isalnum() or c in '-_').strip()
-        tag = f"v{datetime.now().strftime('%Y%m%d-%H%M')}-{safe_topic}"
-        title = f"📹 {language.upper()}: {topic[:50]}"
+                if long_video_path and os.path.exists(long_video_path):
+                    logger.info(f"   📤 Long video...")
+                    r = self._upload_file(long_video_path, root)
+                    if r: uploaded.append(r)
 
-        release_id, upload_url = self._create_github_release(tag, title)
-        if not release_id or not upload_url:
-            logger.error("   ❌ Could not create release")
-            return None
+                if thumbnail_long_path and os.path.exists(thumbnail_long_path):
+                    r = self._upload_file(thumbnail_long_path, root)
+                    if r: uploaded.append(r)
 
-        uploaded = []
-        for file_path in all_files:
-            result = self._upload_to_release(upload_url, file_path)
-            if result:
-                uploaded.append(result)
+                if shorts:
+                    sf = self._create_folder("shorts", root)
+                    if sf:
+                        for i, s in enumerate(shorts):
+                            p = s.get('path', '')
+                            if p and os.path.exists(p):
+                                logger.info(f"   📤 Short {i+1}/{len(shorts)}...")
+                                r = self._upload_file(p, sf)
+                                if r: uploaded.append(r)
 
-        total = sum(f.get('size_mb', 0) for f in uploaded)
-        release_url = f"https://github.com/{self.repo}/releases/tag/{tag}"
+                if short_thumbnails:
+                    tf = self._create_folder("thumbnails", root)
+                    if tf:
+                        for i, tp in enumerate(short_thumbnails):
+                            if tp and os.path.exists(tp):
+                                r = self._upload_file(tp, tf, f"thumb_{i}.jpg")
+                                if r: uploaded.append(r)
 
-        logger.info(f"\n   ☁️ Backup complete: {len(uploaded)} files, {total:.1f} MB")
-        logger.info(f"   🔗 {release_url}")
+                # Script
+                for fp in all_files:
+                    if fp.endswith('.txt') and fp not in [long_video_path]:
+                        r = self._upload_file(fp, root)
+                        if r: uploaded.append(r)
 
-        return {
-            'folder_link': release_url,
-            'files': uploaded,
-            'total_size_mb': round(total, 1)
-        }
+                if uploaded:
+                    total = sum(f.get('size_mb', 0) for f in uploaded)
+                    link = f"https://drive.google.com/drive/folders/{root}"
+                    logger.info(f"\n   ☁️ Drive: {len(uploaded)} files, {total:.1f} MB")
+                    logger.info(f"   🔗 {link}")
+                    return {'folder_id': root, 'folder_link': link,
+                            'files': uploaded, 'total_size_mb': round(total, 1)}
+
+        # Fallback to GitHub Releases
+        if hasattr(self, 'github_token') and self.github_token:
+            return self._github_release_upload(topic, language, all_files)
+
+        return None
