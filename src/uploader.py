@@ -1,5 +1,5 @@
 """
-YOUTUBE UPLOADER — Fixed publish flow with proper waits
+YOUTUBE UPLOADER — Handles hidden file inputs + JS fallbacks
 """
 
 import asyncio
@@ -76,12 +76,11 @@ class YouTubeUploader:
         except Exception:
             pass
 
-    async def _click_js(self, js_selector_code, description="element"):
-        """Click element using JavaScript — most reliable method"""
+    async def _click_js(self, js_code, description="element"):
         try:
-            result = await self.page.evaluate(js_selector_code)
+            result = await self.page.evaluate(js_code)
             if result:
-                logger.info(f"   ✅ {description} (via JS)")
+                logger.info(f"   ✅ {description}")
                 await asyncio.sleep(1)
                 return True
         except Exception:
@@ -104,35 +103,86 @@ class YouTubeUploader:
                 'https://studio.youtube.com/channel/UC/videos/upload?d=ud',
                 wait_until='domcontentloaded', timeout=30000
             )
-            await asyncio.sleep(3)
+            await asyncio.sleep(4)
 
             if 'accounts.google.com' in self.page.url:
                 raise Exception("Session expired")
 
             logger.info(f"   ✅ Studio loaded")
 
-            # Step 2: Find file input
+            # Step 2: Find file input — it is HIDDEN, use state='attached'
             logger.info(f"   2️⃣ Finding upload input...")
-            file_input = await self.page.wait_for_selector(
-                'input[type="file"]', timeout=10000
-            )
+
+            file_input = None
+
+            # Method 1: Find hidden file input directly
+            try:
+                file_input = await self.page.wait_for_selector(
+                    'input[type="file"]', state='attached', timeout=8000
+                )
+                logger.info(f"   ✅ File input found (attached)")
+            except Exception:
+                logger.info(f"   🔄 File input not ready, trying button click...")
+
+            # Method 2: Click SELECT FILES button to trigger dialog
             if not file_input:
-                raise Exception("File input not found")
+                await self._click_js("""
+                    () => {
+                        // Try select files button
+                        const sfb = document.querySelector('#select-files-button');
+                        if (sfb) { sfb.click(); return true; }
+                        // Try by text
+                        const btns = document.querySelectorAll('ytcp-button, button');
+                        for (const b of btns) {
+                            const t = (b.textContent || '').toLowerCase();
+                            if (t.includes('select file') || t.includes('upload')) {
+                                b.click(); return true;
+                            }
+                        }
+                        return false;
+                    }
+                """, "Select Files button")
+                await asyncio.sleep(2)
 
-            # Step 3: Upload file
-            logger.info(f"   3️⃣ Selecting file...")
-            await file_input.set_input_files(os.path.abspath(video_path))
-            logger.info(f"   ✅ File selected")
-            await asyncio.sleep(5)
+                try:
+                    file_input = await self.page.wait_for_selector(
+                        'input[type="file"]', state='attached', timeout=8000
+                    )
+                    logger.info(f"   ✅ File input found after button click")
+                except Exception:
+                    pass
 
-            # Step 4: Title — use JavaScript for reliability
+            # Method 3: Use page.set_input_files directly with locator
+            if not file_input:
+                logger.info(f"   🔄 Using direct locator method...")
+                try:
+                    locator = self.page.locator('input[type="file"]')
+                    count = await locator.count()
+                    logger.info(f"   Found {count} file inputs")
+                    if count > 0:
+                        await locator.first.set_input_files(os.path.abspath(video_path))
+                        logger.info(f"   ✅ File set via locator")
+                        await asyncio.sleep(5)
+                        # Skip step 3 since file is already set
+                        file_input = "ALREADY_SET"
+                except Exception as e:
+                    logger.warning(f"   ⚠️ Locator method failed: {e}")
+
+            if not file_input:
+                await self._screenshot("no_file_input")
+                raise Exception("Could not find file input")
+
+            # Step 3: Set file (if not already set)
+            if file_input != "ALREADY_SET":
+                logger.info(f"   3️⃣ Selecting file...")
+                await file_input.set_input_files(os.path.abspath(video_path))
+                logger.info(f"   ✅ File selected")
+                await asyncio.sleep(5)
+
+            # Step 4: Title
             logger.info(f"   4️⃣ Setting title...")
-            title_clean = title[:100].replace("'", "\\'").replace('"', '\\"')
-
-            # Wait for title field to appear
             await asyncio.sleep(2)
 
-            # Try Playwright selector first
             title_set = False
             for sel in ['#textbox[aria-label*="title"]', '#textbox[aria-label*="Title"]',
                         '#title-textarea #textbox']:
@@ -143,7 +193,7 @@ class YouTubeUploader:
                         await self.page.keyboard.press('Control+A')
                         await self.page.keyboard.press('Delete')
                         await asyncio.sleep(0.3)
-                        await self.page.keyboard.type(title_clean, delay=10)
+                        await self.page.keyboard.type(title[:100], delay=10)
                         title_set = True
                         logger.info(f"   ✅ Title set")
                         break
@@ -151,12 +201,11 @@ class YouTubeUploader:
                     continue
 
             if not title_set:
-                # JS fallback
                 await self._click_js(f"""
                     () => {{
                         const boxes = document.querySelectorAll('#textbox');
                         if (boxes.length > 0) {{
-                            boxes[0].textContent = '{title_clean}';
+                            boxes[0].textContent = '{title[:100].replace("'", "").replace('"', '')}';
                             boxes[0].dispatchEvent(new Event('input', {{bubbles: true}}));
                             return true;
                         }}
@@ -166,7 +215,6 @@ class YouTubeUploader:
 
             # Step 5: Description
             logger.info(f"   5️⃣ Setting description...")
-            desc_clean = description[:2000].replace("'", "\\'").replace('"', '\\"').replace('\n', '\\n')
             try:
                 desc_el = await self.page.wait_for_selector(
                     '#description-textarea #textbox', timeout=5000
@@ -178,104 +226,64 @@ class YouTubeUploader:
             except Exception:
                 logger.warning(f"   ⚠️ Description skipped")
 
-            # Step 6: NOT MADE FOR KIDS — Critical fix!
+            # Step 6: Not for kids — multiple methods
             logger.info(f"   6️⃣ Setting 'Not made for kids'...")
-
-            # Method 1: Direct Playwright click
             kids_set = False
+
             for sel in ['tp-yt-paper-radio-button[name="NOT_MADE_FOR_KIDS"]',
                         'tp-yt-paper-radio-button[name="VIDEO_MADE_FOR_KIDS_NOT_MFK"]']:
                 try:
-                    el = await self.page.wait_for_selector(sel, timeout=5000)
+                    el = await self.page.wait_for_selector(sel, timeout=3000)
                     if el:
                         await el.click()
                         kids_set = True
-                        logger.info(f"   ✅ Not for kids set (selector)")
+                        logger.info(f"   ✅ Not for kids (selector)")
                         break
                 except Exception:
                     continue
 
-            # Method 2: JavaScript click (more reliable)
             if not kids_set:
                 kids_set = await self._click_js("""
                     () => {
-                        // Find all radio buttons
                         const radios = document.querySelectorAll('tp-yt-paper-radio-button');
-                        for (const radio of radios) {
-                            const name = radio.getAttribute('name') || '';
-                            const text = radio.textContent || '';
-                            if (name.includes('NOT_MADE_FOR_KIDS') || 
-                                name.includes('NOT_MFK') ||
-                                text.includes('not made for kids') ||
-                                text.includes('No, it') ) {
-                                radio.click();
-                                return true;
+                        for (const r of radios) {
+                            const name = r.getAttribute('name') || '';
+                            const text = (r.textContent || '').toLowerCase();
+                            if (name.includes('NOT_MADE') || name.includes('NOT_MFK') ||
+                                text.includes('not made for kids') || text.includes("no, it")) {
+                                r.click(); return true;
                             }
                         }
-                        // Try second radio button in the audience section
-                        const audienceRadios = document.querySelectorAll('#audience tp-yt-paper-radio-button, #made-for-kids-group tp-yt-paper-radio-button');
-                        if (audienceRadios.length >= 2) {
-                            audienceRadios[1].click();
-                            return true;
-                        }
+                        const all = document.querySelectorAll('#audience tp-yt-paper-radio-button');
+                        if (all.length >= 2) { all[1].click(); return true; }
                         return false;
                     }
                 """, "Not for kids (JS)")
 
-            # Method 3: Scroll down and try again
             if not kids_set:
-                logger.info(f"   🔄 Scrolling to find kids setting...")
-                await self.page.evaluate("window.scrollBy(0, 500)")
-                await asyncio.sleep(1)
-                kids_set = await self._click_js("""
-                    () => {
-                        const all = document.querySelectorAll('tp-yt-paper-radio-button');
-                        for (let i = 0; i < all.length; i++) {
-                            const t = all[i].textContent || '';
-                            if (t.toLowerCase().includes('not made') || t.toLowerCase().includes("no, it's not")) {
-                                all[i].click();
-                                return true;
-                            }
-                        }
-                        // Last resort: click second radio in any group
-                        if (all.length >= 2) {
-                            all[1].click();
-                            return true;
-                        }
-                        return false;
-                    }
-                """, "Not for kids (scroll+JS)")
-
-            if not kids_set:
-                logger.warning(f"   ⚠️ Could not set 'Not for kids' — video may go to drafts")
-                await self._screenshot("kids_setting_failed")
-
-            await asyncio.sleep(1)
+                logger.warning(f"   ⚠️ Kids setting failed — may go to drafts")
+                await self._screenshot("kids_failed")
 
             # Step 7: Thumbnail
             if thumbnail_path and os.path.exists(thumbnail_path):
                 logger.info(f"   7️⃣ Setting thumbnail...")
                 try:
-                    for sel in ['#file-loader input[type="file"]',
-                                'input[accept="image/jpeg,image/png"]']:
-                        thumb = await self.page.query_selector(sel)
-                        if thumb:
-                            await thumb.set_input_files(os.path.abspath(thumbnail_path))
-                            await asyncio.sleep(2)
-                            logger.info(f"   ✅ Thumbnail set")
-                            break
+                    thumb = self.page.locator('#file-loader input[type="file"], input[accept="image/jpeg,image/png"]')
+                    if await thumb.count() > 0:
+                        await thumb.first.set_input_files(os.path.abspath(thumbnail_path))
+                        await asyncio.sleep(2)
+                        logger.info(f"   ✅ Thumbnail set")
                 except Exception:
                     logger.warning(f"   ⚠️ Thumbnail skipped")
 
-            # Step 8: Wait for upload to process
-            logger.info(f"   8️⃣ Waiting for upload processing...")
+            # Step 8: Wait for processing
+            logger.info(f"   8️⃣ Waiting for processing...")
             for i in range(36):
                 try:
                     body = await self.page.inner_text('body')
                     if any(p in body for p in ['Checks complete', 'Upload complete',
-                                                'Processing complete', 'SD', 'HD',
-                                                'Checking', 'checks']):
-                        logger.info(f"   ✅ Upload processed ({i*5}s)")
+                                                'Processing complete', 'SD', 'HD']):
+                        logger.info(f"   ✅ Processed ({i*5}s)")
                         break
                 except Exception:
                     pass
@@ -283,188 +291,88 @@ class YouTubeUploader:
                 if i > 0 and i % 6 == 0:
                     logger.info(f"      ⏳ Processing... ({i*5}s)")
 
-            # Step 9: Click NEXT 3 times to reach visibility page
+            # Step 9: NEXT × 3
             logger.info(f"   9️⃣ Navigating to visibility...")
-
             for step in range(3):
-                # Try Playwright
-                clicked = False
                 try:
                     btn = await self.page.wait_for_selector('#next-button', timeout=3000)
                     if btn:
                         await btn.click()
-                        clicked = True
                 except Exception:
-                    pass
-
-                # JS fallback
-                if not clicked:
                     await self._click_js("""
                         () => {
-                            const btn = document.querySelector('#next-button');
-                            if (btn) { btn.click(); return true; }
-                            // Try aria-label
-                            const buttons = document.querySelectorAll('ytcp-button');
-                            for (const b of buttons) {
-                                if (b.textContent.includes('Next') || b.textContent.includes('next')) {
-                                    b.click(); return true;
-                                }
-                            }
+                            const b = document.querySelector('#next-button');
+                            if (b) { b.click(); return true; }
                             return false;
                         }
                     """, f"Next {step+1}")
-
                 await asyncio.sleep(2)
 
-            # Step 10: Set PUBLIC visibility
-            logger.info(f"   🔟 Setting PUBLIC visibility...")
-
-            # Try Playwright
-            public_set = False
+            # Step 10: PUBLIC
+            logger.info(f"   🔟 Setting PUBLIC...")
             try:
                 el = await self.page.wait_for_selector(
                     'tp-yt-paper-radio-button[name="PUBLIC"]', timeout=3000
                 )
                 if el:
                     await el.click()
-                    public_set = True
-                    logger.info(f"   ✅ Set to Public")
+                    logger.info(f"   ✅ Public set")
             except Exception:
-                pass
-
-            # JS fallback
-            if not public_set:
-                public_set = await self._click_js("""
+                await self._click_js("""
                     () => {
                         const radios = document.querySelectorAll('tp-yt-paper-radio-button');
                         for (const r of radios) {
-                            const name = r.getAttribute('name') || '';
-                            const text = r.textContent || '';
-                            if (name === 'PUBLIC' || text.includes('Public')) {
-                                r.click();
-                                return true;
+                            if ((r.getAttribute('name')||'') === 'PUBLIC' ||
+                                (r.textContent||'').includes('Public')) {
+                                r.click(); return true;
                             }
-                        }
-                        // Try the third radio (Public is usually third: Private, Unlisted, Public)
-                        const visRadios = document.querySelectorAll('#privacy-radios tp-yt-paper-radio-button');
-                        if (visRadios.length >= 3) {
-                            visRadios[2].click();
-                            return true;
                         }
                         return false;
                     }
                 """, "Public (JS)")
 
-            if not public_set:
-                logger.warning(f"   ⚠️ Could not set Public — may publish as Private")
-
-            await asyncio.sleep(1)
-
-            # Step 11: Click PUBLISH / DONE button
-            logger.info(f"   1️⃣1️⃣ Clicking Publish...")
-
-            publish_clicked = False
-
-            # Try Playwright
+            # Step 11: PUBLISH
+            logger.info(f"   1️⃣1️⃣ Publishing...")
             try:
                 btn = await self.page.wait_for_selector('#done-button', timeout=3000)
                 if btn:
                     await btn.click()
-                    publish_clicked = True
                     logger.info(f"   ✅ Publish clicked")
             except Exception:
-                pass
-
-            # JS fallback
-            if not publish_clicked:
-                publish_clicked = await self._click_js("""
+                await self._click_js("""
                     () => {
-                        // Try done-button
-                        const done = document.querySelector('#done-button');
-                        if (done) { done.click(); return true; }
-                        // Try by text
-                        const buttons = document.querySelectorAll('ytcp-button');
-                        for (const b of buttons) {
-                            const text = b.textContent || '';
-                            if (text.includes('Publish') || text.includes('Done') || 
-                                text.includes('Save') || text.includes('publish')) {
-                                b.click(); return true;
+                        const b = document.querySelector('#done-button');
+                        if (b) { b.click(); return true; }
+                        const btns = document.querySelectorAll('ytcp-button');
+                        for (const x of btns) {
+                            if ((x.textContent||'').match(/publish|done|save/i)) {
+                                x.click(); return true;
                             }
                         }
                         return false;
                     }
                 """, "Publish (JS)")
 
-            if not publish_clicked:
-                logger.error(f"   ❌ Could not click Publish!")
-                await self._screenshot("publish_button_not_found")
-
-            # Step 12: Wait for confirmation (max 60 seconds)
-            logger.info(f"   ⏳ Waiting for publish confirmation (max 60s)...")
-            published = False
-
-            for i in range(12):  # 12 × 5s = 60s max
+            # Wait for confirmation (max 60s)
+            logger.info(f"   ⏳ Confirming publish (max 60s)...")
+            for i in range(12):
                 await asyncio.sleep(5)
                 try:
                     body = await self.page.inner_text('body')
-
-                    # Check for success indicators
-                    if any(phrase in body for phrase in [
-                        'Video published', 'has been published',
-                        'video is being published',
-                        'Your video is live',
-                    ]):
-                        published = True
-                        logger.info(f"   ✅ PUBLISHED! (confirmed)")
+                    if any(p in body for p in ['Video published', 'has been published',
+                                                'is being published', 'is live']):
+                        logger.info(f"   ✅ PUBLISHED!")
                         break
-
-                    # Check for close/share dialog (means published)
-                    close_btn = await self.page.query_selector(
-                        'ytcp-button[id="close-button"]'
-                    )
-                    if close_btn:
-                        published = True
-                        logger.info(f"   ✅ PUBLISHED! (close dialog found)")
+                    close = await self.page.query_selector('ytcp-button[id="close-button"]')
+                    if close:
+                        logger.info(f"   ✅ PUBLISHED (close dialog found)")
                         break
-
-                    # Check if dialog closed (means published)
-                    dialog = await self.page.query_selector(
-                        'ytcp-uploads-dialog'
-                    )
-                    if not dialog:
-                        published = True
-                        logger.info(f"   ✅ PUBLISHED! (dialog closed)")
-                        break
-
                 except Exception:
                     pass
 
-                if i > 0 and i % 4 == 0:
-                    logger.info(f"      ⏳ Waiting... ({i*5}s)")
-
-            if not published:
-                # Try clicking close/done one more time
-                await self._click_js("""
-                    () => {
-                        const btns = document.querySelectorAll('ytcp-button');
-                        for (const b of btns) {
-                            const t = b.textContent || '';
-                            if (t.includes('Close') || t.includes('close')) {
-                                b.click(); return true;
-                            }
-                        }
-                        return false;
-                    }
-                """, "Close dialog")
-
-                logger.warning(f"   ⚠️ Could not confirm publish — check Studio")
-                await self._screenshot("publish_unconfirmed")
-
-            # Get video URL
-            video_url = await self._get_video_url()
-
+            video_url = await self._get_url()
             logger.info(f"\n   ✅✅✅ UPLOAD COMPLETE ✅✅✅")
-            logger.info(f"   🔗 URL: {video_url}")
+            logger.info(f"   🔗 {video_url}")
             return video_url
 
         except Exception as e:
@@ -474,7 +382,7 @@ class YouTubeUploader:
         finally:
             await self._stop_browser()
 
-    async def _get_video_url(self):
+    async def _get_url(self):
         try:
             content = await self.page.content()
             for p in [r'youtube\.com/watch\?v=([a-zA-Z0-9_-]{11})',
@@ -484,18 +392,6 @@ class YouTubeUploader:
                 m = re.search(p, content)
                 if m:
                     return f"https://youtube.com/watch?v={m.group(1)}"
-
-            # Try link elements
-            for sel in ['a.style-scope.ytcp-video-info',
-                        'a[href*="youtu"]', 'a[href*="watch"]']:
-                try:
-                    links = await self.page.query_selector_all(sel)
-                    for link in links:
-                        href = await link.get_attribute('href')
-                        if href and ('watch' in href or 'youtu.be' in href):
-                            return href if href.startswith('http') else f"https://studio.youtube.com{href}"
-                except Exception:
-                    continue
         except Exception:
             pass
         return "URL not captured — check YouTube Studio"
@@ -506,8 +402,3 @@ class YouTubeUploader:
             self.upload_video(video_path, title, description,
                              tags, thumbnail_path, is_short)
         )
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    print("Uploader ready")
