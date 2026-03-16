@@ -1,0 +1,190 @@
+name: 🎬 YouTube Automation
+
+on:
+  # Scheduled runs (UTC times — adjust for IST)
+  schedule:
+    # Telugu: 3:30 UTC = 9:00 IST, 11:30 UTC = 17:00 IST
+    - cron: '30 3 * * *'
+    - cron: '30 11 * * *'
+  
+  # Manual trigger
+  workflow_dispatch:
+    inputs:
+      language:
+        description: 'Language to process'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - telugu
+          - hindi
+      
+      test_mode:
+        description: 'Test mode (skip upload)'
+        required: false
+        default: false
+        type: boolean
+
+# Prevent concurrent runs
+concurrency:
+  group: youtube-automation
+  cancel-in-progress: false
+
+jobs:
+  create-and-upload:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    
+    steps:
+      # ──────────────────────────────────────
+      # SETUP
+      # ──────────────────────────────────────
+      
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libgl1-mesa-glx
+
+      - name: 📦 Install Python dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🌐 Install Playwright browser
+        run: python -m playwright install chromium
+
+      - name: 📁 Create directories
+        run: |
+          mkdir -p config/cookies
+          mkdir -p assets/fonts assets/music
+          mkdir -p output/logs/screenshots
+
+      # ──────────────────────────────────────
+      # RESTORE SECRETS
+      # ──────────────────────────────────────
+      
+      - name: 🔑 Restore API keys and cookies
+        run: |
+          # Write cookie files from secrets
+          echo '${{ secrets.TELUGU_COOKIES }}' > config/cookies/telugu_channel.json
+          echo '${{ secrets.HINDI_COOKIES }}' > config/cookies/hindi_channel.json
+          
+          # Verify cookies exist and are valid JSON
+          echo "Verifying Telugu cookies..."
+          python -c "import json; json.load(open('config/cookies/telugu_channel.json'))" && echo "✅ Telugu cookies valid" || echo "❌ Telugu cookies invalid"
+          
+          echo "Verifying Hindi cookies..."
+          python -c "import json; json.load(open('config/cookies/hindi_channel.json'))" && echo "✅ Hindi cookies valid" || echo "❌ Hindi cookies invalid"
+        env:
+          TELUGU_COOKIES: ${{ secrets.TELUGU_COOKIES }}
+          HINDI_COOKIES: ${{ secrets.HINDI_COOKIES }}
+
+      - name: 📝 Update config with API keys
+        run: |
+          # Create a Python script to update config
+          python -c "
+          import yaml
+          with open('config/config.yaml', 'r') as f:
+              config = yaml.safe_load(f)
+          config['gemini']['api_key'] = '${{ secrets.GEMINI_API_KEY }}'
+          config['footage']['pexels_api_key'] = '${{ secrets.PEXELS_API_KEY }}'
+          with open('config/config.yaml', 'w') as f:
+              yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
+          print('✅ Config updated with API keys')
+          "
+
+      - name: 🔍 Download fonts if missing
+        run: |
+          cd assets/fonts
+          
+          if [ ! -f "NotoSansTelugu-Bold.ttf" ]; then
+            echo "Downloading Telugu font..."
+            wget -q "https://github.com/google/fonts/raw/main/ofl/notosanstelugu/NotoSansTelugu%5Bwdth%2Cwght%5D.ttf" -O NotoSansTelugu-Bold.ttf || echo "Font download failed"
+          fi
+          
+          if [ ! -f "NotoSansDevanagari-Bold.ttf" ]; then
+            echo "Downloading Hindi font..."
+            wget -q "https://github.com/google/fonts/raw/main/ofl/notosansdevanagari/NotoSansDevanagari%5Bwdth%2Cwght%5D.ttf" -O NotoSansDevanagari-Bold.ttf || echo "Font download failed"
+          fi
+          
+          ls -la
+
+      # ──────────────────────────────────────
+      # DOWNLOAD FREE BACKGROUND MUSIC
+      # ──────────────────────────────────────
+      
+      - name: 🎵 Download background music
+        run: |
+          cd assets/music
+          
+          if [ ! -f "bg_ambient.mp3" ]; then
+            echo "Downloading ambient background music..."
+            # Use a free CC0 music source
+            wget -q "https://cdn.pixabay.com/audio/2024/01/04/audio_20a1f1c0e0.mp3" -O bg_ambient.mp3 2>/dev/null || echo "Music download failed - will continue without background music"
+          fi
+          
+          ls -la
+
+      # ──────────────────────────────────────
+      # RUN PIPELINE
+      # ──────────────────────────────────────
+      
+      - name: 🚀 Run YouTube Automation Pipeline
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
+          GITHUB_ACTIONS: 'true'
+        run: |
+          LANGUAGE="${{ github.event.inputs.language || 'all' }}"
+          
+          echo "═══════════════════════════════════════════════"
+          echo "  🤖 YouTube Automation Pipeline"
+          echo "  Language: $LANGUAGE"
+          echo "  Time: $(date)"
+          echo "═══════════════════════════════════════════════"
+          
+          python main.py --language "$LANGUAGE"
+
+      # ──────────────────────────────────────
+      # SAVE ARTIFACTS
+      # ──────────────────────────────────────
+      
+      - name: 📊 Save pipeline logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pipeline-logs-${{ github.run_number }}
+          path: |
+            output/logs/
+          retention-days: 7
+
+      - name: 📸 Save debug screenshots
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: debug-screenshots-${{ github.run_number }}
+          path: output/logs/screenshots/
+          retention-days: 3
+
+      # ──────────────────────────────────────
+      # UPDATE COOKIES (if they were refreshed)
+      # ──────────────────────────────────────
+      
+      - name: 🍪 Check if cookies were refreshed
+        if: always()
+        run: |
+          echo "Cookies may have been refreshed during upload."
+          echo "If uploads start failing, re-extract cookies locally:"
+          echo "  python -m src.cookie_extractor --channel telugu"
+          echo "  python -m src.cookie_extractor --channel hindi"
+          echo "Then update the GitHub secrets."
