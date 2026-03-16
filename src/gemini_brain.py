@@ -104,21 +104,14 @@ class GeminiBrain:
             self.groq_key_2 = os.environ.get('GROQ_API_KEY_2', '')
 
         self.providers = []
-
         if self.gemini_key:
             self.providers.append(GeminiProvider(self.gemini_key, "gemini-2.0-flash-lite"))
-
         if self.groq_key:
             self.providers.append(GroqProvider(self.groq_key, "llama-3.3-70b-versatile"))
-
         if self.groq_key_2:
-            self.providers.append(GroqProvider(self.groq_key_2, "mistral-saba-24b"))
-
+            self.providers.append(GroqProvider(self.groq_key_2, "qwen-qwq-32b"))
         if self.gemini_key:
             self.providers.append(GeminiProvider(self.gemini_key, "gemini-2.0-flash"))
-
-        if self.groq_key:
-            self.providers.append(GroqProvider(self.groq_key, "deepseek-r1-distill-llama-70b"))
 
         if not self.providers:
             raise Exception("No AI API keys! Set GEMINI_API_KEY or GROQ_API_KEY")
@@ -280,20 +273,25 @@ Write ONLY the script."""
         logger.info(f"   ✅ Script: {word_count} words")
 
         if word_count < 800:
-            logger.info(f"   🔄 Expanding ({word_count} words)...")
+            logger.info(f"   🔄 Script short ({word_count}), generating Part 2...")
             try:
-                expand = f"""Expand this {language} script to 1800+ words. Add stories, examples, reactions, audience interaction. Keep markers.
+                part2_prompt = f"""Continue this {language} YouTube script. Write 800+ MORE words.
+The script so far covers the HOOK and some sections.
+Now write MORE content for the remaining sections.
+Keep the same Tenglish/Hinglish style. Same section markers.
+Add more stories, examples, audience interaction.
 
-SCRIPT:
-{script[:3000]}
+EXISTING SCRIPT:
+{script[:2000]}
 
-EXPANDED (1800+ words):"""
-                expanded = self._call_ai(expand)
-                if len(expanded.split()) > word_count:
-                    script = expanded
-                    logger.info(f"   ✅ Expanded to {len(expanded.split())} words")
+CONTINUE FROM WHERE IT STOPPED (write 800+ new words):"""
+
+                part2 = self._call_ai(part2_prompt)
+                if len(part2.split()) > 200:
+                    script = script + "\n\n" + part2
+                    logger.info(f"   ✅ Combined: {len(script.split())} words")
             except Exception as e:
-                logger.warning(f"   ⚠️ Expansion failed: {e}")
+                logger.warning(f"   ⚠️ Part 2 failed: {e}")
 
         return script
 
