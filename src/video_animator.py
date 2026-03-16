@@ -1,6 +1,5 @@
 """
-VIDEO ANIMATOR — Fast Anime-Style Videos for GitHub Actions
-Optimized: pre-processes backgrounds as images, not per-frame filter.
+VIDEO ANIMATOR — Anime-Style with Ken Burns Zoom + Subtitles
 """
 
 import os
@@ -9,7 +8,6 @@ import logging
 import time
 import tempfile
 import shutil
-import subprocess
 import numpy as np
 import cv2
 from PIL import Image, ImageDraw, ImageFont
@@ -17,7 +15,7 @@ from moviepy.editor import (
     VideoFileClip, AudioFileClip, TextClip,
     CompositeVideoClip, CompositeAudioClip,
     concatenate_videoclips, ColorClip,
-    ImageSequenceClip, ImageClip
+    ImageSequenceClip, ImageClip, VideoClip
 )
 from moviepy.video.fx.all import crop
 import requests
@@ -26,14 +24,11 @@ logger = logging.getLogger(__name__)
 
 
 def apply_anime_filter_to_image(pil_image):
-    """Apply anime filter to a single PIL Image (not video frame)"""
     try:
         frame = np.array(pil_image)
         img = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
-
         for _ in range(2):
             img = cv2.bilateralFilter(img, d=7, sigmaColor=50, sigmaSpace=50)
-
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         gray = cv2.medianBlur(gray, 5)
         edges = cv2.adaptiveThreshold(
@@ -41,23 +36,18 @@ def apply_anime_filter_to_image(pil_image):
             cv2.THRESH_BINARY, blockSize=9, C=2
         )
         edges_bgr = cv2.cvtColor(edges, cv2.COLOR_GRAY2BGR)
-
         div = 32
         img = (img // div) * div + div // 2
         cartoon = cv2.bitwise_and(img, edges_bgr)
-
         hsv = cv2.cvtColor(cartoon, cv2.COLOR_BGR2HSV)
         hsv[:, :, 1] = np.clip(hsv[:, :, 1] * 1.3, 0, 255).astype(np.uint8)
         cartoon = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
-
-        result = cv2.cvtColor(cartoon, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(result)
+        return Image.fromarray(cv2.cvtColor(cartoon, cv2.COLOR_BGR2RGB))
     except Exception:
         return pil_image
 
 
 def extract_frame_from_video(video_path, time_sec=1):
-    """Extract a single frame from video file"""
     try:
         clip = VideoFileClip(video_path)
         t = min(time_sec, clip.duration - 0.1)
@@ -69,31 +59,48 @@ def extract_frame_from_video(video_path, time_sec=1):
 
 
 def create_anime_background(video_path, target_w, target_h, duration):
-    """Create anime background from stock clip — extract frame, filter, make ImageClip"""
+    """Create anime background WITH slow zoom effect (Ken Burns)"""
     try:
         pil_img = extract_frame_from_video(video_path, time_sec=1)
         if pil_img is None:
             return ColorClip(size=(target_w, target_h), color=(20, 10, 50), duration=duration)
 
-        pil_img = pil_img.resize((target_w, target_h), Image.LANCZOS)
+        zoom_w = int(target_w * 1.2)
+        zoom_h = int(target_h * 1.2)
+        pil_img = pil_img.resize((zoom_w, zoom_h), Image.LANCZOS)
         anime_img = apply_anime_filter_to_image(pil_img)
         anime_array = np.array(anime_img)
 
-        clip = ImageClip(anime_array).set_duration(duration)
+        def make_frame(t):
+            progress = t / max(duration, 0.1)
+            scale = 1.0 + progress * 0.15
+
+            h, w = anime_array.shape[:2]
+            new_h = int(h / scale)
+            new_w = int(w / scale)
+
+            y1 = (h - new_h) // 2
+            x1 = (w - new_w) // 2
+            cropped = anime_array[y1:y1 + new_h, x1:x1 + new_w]
+
+            img = Image.fromarray(cropped)
+            img = img.resize((target_w, target_h), Image.LANCZOS)
+            return np.array(img)
+
+        clip = VideoClip(make_frame, duration=duration)
         return clip
+
     except Exception:
         return ColorClip(size=(target_w, target_h), color=(20, 10, 50), duration=duration)
 
 
 def create_gradient_bg(target_w, target_h, duration):
-    """Create animated gradient background"""
     colors = [
         (20, 0, 60), (0, 30, 80), (40, 0, 40),
         (10, 40, 60), (50, 0, 30), (0, 20, 50)
     ]
     c1 = random.choice(colors)
     c2 = random.choice(colors)
-
     img = Image.new('RGB', (target_w, target_h))
     for y in range(target_h):
         ratio = y / target_h
@@ -102,7 +109,6 @@ def create_gradient_bg(target_w, target_h, duration):
         b = int(c1[2] + (c2[2] - c1[2]) * ratio)
         for x in range(target_w):
             img.putpixel((x, y), (r, g, b))
-
     return ImageClip(np.array(img)).set_duration(duration)
 
 
@@ -110,7 +116,6 @@ def create_character_frame(width=300, height=500, mouth_open=False,
                            eyes_open=True, hair_color=(30, 30, 100),
                            eye_color=(100, 50, 200),
                            outfit_color=(200, 50, 50)):
-    """Draw simple anime character"""
     img = Image.new('RGBA', (width, height), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
     cx = width // 2
@@ -164,7 +169,6 @@ def create_character_frame(width=300, height=500, mouth_open=False,
 
 def generate_character_clip(duration, fps=8, hair_color=(30,30,100),
                              eye_color=(100,50,200), outfit_color=(200,50,50)):
-    """Generate character animation as a clip"""
     total_frames = int(duration * fps)
     frames = []
     blink_interval = fps * 4
@@ -184,7 +188,6 @@ def generate_character_clip(duration, fps=8, hair_color=(30,30,100),
 
 
 def download_stock_footage(keyword, output_dir, pexels_key, count=1):
-    """Download from Pexels"""
     downloaded = []
     if not pexels_key:
         return downloaded
@@ -218,7 +221,6 @@ def download_stock_footage(keyword, output_dir, pexels_key, count=1):
 
 
 class VideoAnimator:
-    """Fast anime video creator for GitHub Actions"""
 
     def __init__(self, config_path="config/config.yaml"):
         import yaml
@@ -233,8 +235,6 @@ class VideoAnimator:
     def create_anime_video(self, voice_path, subtitle_path, footage_keywords,
                             sections, language, channel_config, output_path,
                             bg_music_path=None):
-        """Create long-form anime video — FAST version"""
-
         logger.info("🎬 STEP: Creating anime-style video...")
 
         voice_audio = AudioFileClip(voice_path)
@@ -245,7 +245,6 @@ class VideoAnimator:
         res_h = self.config.get('content',{}).get('long_form',{}).get('resolution_h', 720)
         fps = 15
 
-        # Download footage
         temp_dir = tempfile.mkdtemp(prefix='yt_vid_')
         footage_dir = os.path.join(temp_dir, 'footage')
         os.makedirs(footage_dir, exist_ok=True)
@@ -265,8 +264,7 @@ class VideoAnimator:
         eyes = tuple(char_cfg.get('eye_color', [100,50,200]))
         outfit = tuple(char_cfg.get('outfit_color', [200,50,50]))
 
-        # Build scenes using STATIC anime backgrounds (FAST)
-        logger.info(f"   🎨 Building {len(sections)} scenes (static anime backgrounds)...")
+        logger.info(f"   🎨 Building {len(sections)} scenes...")
         scene_clips = []
         clip_idx = 0
 
@@ -276,7 +274,7 @@ class VideoAnimator:
             title = section.get('title', '')
             logger.info(f"   🎨 Scene {sec_i+1}/{len(sections)}: [{marker}] {sec_dur:.1f}s")
 
-            # Background: extract ONE frame, anime-filter it, use as static image
+            # Background with Ken Burns zoom
             if all_footage:
                 fp = all_footage[clip_idx % len(all_footage)]
                 clip_idx += 1
@@ -284,7 +282,7 @@ class VideoAnimator:
             else:
                 bg = create_gradient_bg(res_w, res_h, sec_dur)
 
-            # Character (low fps for speed)
+            # Character
             try:
                 char_clip = generate_character_clip(
                     min(sec_dur, 20), fps=6,
@@ -300,27 +298,56 @@ class VideoAnimator:
                 logger.warning(f"   ⚠️ Character failed: {e}")
                 scene = bg
 
-            # Title text (first 5 seconds)
+            # Section title (first 5 seconds)
             if title and title != marker:
                 try:
                     txt = TextClip(
-                        title, fontsize=32, color='white',
-                        stroke_color='black', stroke_width=2,
+                        title, fontsize=36, color='#FFD700',
+                        stroke_color='black', stroke_width=3,
                         size=(res_w - 400, None), method='caption'
-                    ).set_duration(min(5, sec_dur)).set_position((40, 40))
+                    ).set_duration(min(5, sec_dur)).set_position((40, 30))
+
                     txt_bg = ColorClip(
-                        size=(res_w - 350, 60), color=(0, 0, 0)
-                    ).set_opacity(0.5).set_duration(min(5, sec_dur)).set_position((20, 30))
+                        size=(res_w - 350, 70), color=(0, 0, 0)
+                    ).set_opacity(0.6).set_duration(min(5, sec_dur)).set_position((20, 20))
+
                     scene = CompositeVideoClip(
                         [scene, txt_bg, txt], size=(res_w, res_h)
                     )
                 except Exception:
                     pass
 
+            # Subtitle text at bottom
+            section_text = section.get('text', '')
+            if section_text:
+                try:
+                    import re as re_module
+                    sentences = re_module.split(r'[.!?।]', section_text)
+                    subtitle = '. '.join(s.strip() for s in sentences[:2] if s.strip())
+                    if len(subtitle) > 80:
+                        subtitle = subtitle[:80] + '...'
+
+                    if subtitle:
+                        sub_txt = TextClip(
+                            subtitle, fontsize=24, color='white',
+                            stroke_color='black', stroke_width=2,
+                            size=(res_w - 200, None), method='caption',
+                            align='center'
+                        ).set_duration(min(8, sec_dur)).set_start(2).set_position(('center', res_h - 100))
+
+                        sub_bg = ColorClip(
+                            size=(res_w - 150, 60), color=(0, 0, 0)
+                        ).set_opacity(0.5).set_duration(min(8, sec_dur)).set_start(2).set_position(('center', res_h - 110))
+
+                        scene = CompositeVideoClip(
+                            [scene, sub_bg, sub_txt], size=(res_w, res_h)
+                        )
+                except Exception:
+                    pass
+
             scene = scene.set_duration(sec_dur)
             scene_clips.append(scene)
 
-        # Concatenate
         logger.info(f"   🔗 Joining {len(scene_clips)} scenes...")
         if scene_clips:
             final_video = concatenate_videoclips(scene_clips, method="compose")
@@ -329,11 +356,9 @@ class VideoAnimator:
 
         final_video = final_video.subclip(0, min(total_duration, final_video.duration))
 
-        # Audio
         logger.info(f"   🎵 Adding voiceover...")
         final_video = final_video.set_audio(voice_audio)
 
-        # Export
         logger.info(f"   💾 Exporting video (this takes 2-4 minutes)...")
         os.makedirs(os.path.dirname(output_path) or '.', exist_ok=True)
 
@@ -343,7 +368,6 @@ class VideoAnimator:
             preset='ultrafast', threads=2, logger=None
         )
 
-        # Cleanup
         final_video.close()
         voice_audio.close()
         for sc in scene_clips:
@@ -359,9 +383,8 @@ class VideoAnimator:
 
     def create_anime_short(self, voice_path, section_text, footage_keywords,
                             language, channel_config, output_path):
-        """Create vertical short — FAST version"""
-
         logger.info(f"   ✂️ Creating short: {os.path.basename(output_path)}")
+
         voice_audio = AudioFileClip(voice_path)
         duration = min(voice_audio.duration, 58)
 
@@ -380,22 +403,11 @@ class VideoAnimator:
             if clips: break
             time.sleep(1)
 
-        # Background
         if all_footage:
-            try:
-                pil_img = extract_frame_from_video(all_footage[0])
-                if pil_img:
-                    pil_img = pil_img.resize((sw, sh), Image.LANCZOS)
-                    pil_img = apply_anime_filter_to_image(pil_img)
-                    bg = ImageClip(np.array(pil_img)).set_duration(duration)
-                else:
-                    bg = ColorClip(size=(sw, sh), color=(20, 10, 50), duration=duration)
-            except:
-                bg = ColorClip(size=(sw, sh), color=(20, 10, 50), duration=duration)
+            bg = create_anime_background(all_footage[0], sw, sh, duration)
         else:
             bg = ColorClip(size=(sw, sh), color=(20, 10, 50), duration=duration)
 
-        # Character
         char_cfg = channel_config.get('character', {})
         try:
             cc = generate_character_clip(
@@ -411,7 +423,6 @@ class VideoAnimator:
         except:
             scene = bg
 
-        # CTA
         cta_map = {'telugu': 'పూర్తి వీడియో చానెల్ లో! 👆', 'hindi': 'पूरा वीडियो चैनल पर! 👆'}
         try:
             cta_bar = ColorClip(size=(sw,80), color=(0,0,0)).set_opacity(0.7).set_duration(duration).set_position(('center', sh-130))
