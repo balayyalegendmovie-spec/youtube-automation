@@ -287,7 +287,7 @@ Context: {part1[:600]}
                 expect_json=True)
         except Exception:
             r = {"overall_score": 7, "approved": True, "summary": "Skipped"}
-        logger.info(f"   📊 {r.get("overall_score", 7)}/10")
+        logger.info(f"   📊 {r.get('overall_score', 7)}/10")
         return script, r
 
     def generate_metadata(self, topic_data, language, video_type="long"):
