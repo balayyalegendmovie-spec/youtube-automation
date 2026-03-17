@@ -1,5 +1,5 @@
 """
-VOICE MAKER — Fast Natural TTS with Breathing & Emotions
+VOICE MAKER — Natural sounding with breathing pauses
 """
 
 import edge_tts
@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 
 
 class VoiceMaker:
-
     VOICES = {
         'telugu': {'female': 'te-IN-ShrutiNeural', 'male': 'te-IN-MohanNeural'},
         'hindi': {'female': 'hi-IN-SwaraNeural', 'male': 'hi-IN-MadhurNeural'}
@@ -21,18 +20,13 @@ class VoiceMaker:
 
     def __init__(self, language='telugu', gender='female', config=None):
         self.language = language
-        self.gender = gender
         self.voice = self.VOICES[language][gender]
         self.config = config or {}
-
         from src.breathing import BreathingProcessor
         self.breathing_processor = BreathingProcessor(
             voice_id=self.voice,
-            config=self.config.get('voice', {}).get('breathing', {})
-        )
-
-        logger.info(f"🎙️ Voice Maker initialized")
-        logger.info(f"   Language: {language}, Voice: {self.voice}")
+            config=self.config.get('voice', {}).get('breathing', {}))
+        logger.info(f"🎙️ Voice: {self.voice}")
 
     def _clean_for_tts(self, text):
         cleaned = re.sub(r'\[HOOK\]|\[SECTION_\d+:.*?\]|\[CTA\]', '', text)
@@ -40,23 +34,35 @@ class VoiceMaker:
         cleaned = re.sub(r'<[^>]+>', '', cleaned)
         cleaned = re.sub(r'\(.*?\)', '', cleaned)
 
-        # Add natural pauses for more realistic speech
-        cleaned = cleaned.replace('...', ',,, ')  # Ellipsis = long pause
-        cleaned = cleaned.replace('—', ', ')
-        cleaned = cleaned.replace(' - ', ', ')
+        # Natural pauses — the KEY to realistic voice
+        # Triple dots = long pause (like thinking)
+        cleaned = cleaned.replace('...', ' ,,, ')
+        cleaned = cleaned.replace('…', ' ,,, ')
+        # Dash = medium pause
+        cleaned = cleaned.replace(' — ', ' ,, ')
+        cleaned = cleaned.replace(' - ', ' , ')
+        # After question mark = pause for effect
+        cleaned = re.sub(r'\?\s+', '? ,,, ', cleaned)
+        # After exclamation = brief pause
+        cleaned = re.sub(r'!\s+', '! ,, ', cleaned)
+        # Between paragraphs = breathing pause
+        cleaned = re.sub(r'\n\s*\n', ' ,,,, ', cleaned)
+        # Single newlines = brief pause
+        cleaned = re.sub(r'\n', ' , ', cleaned)
 
-        # Add pause after question marks
-        cleaned = re.sub(r'\?\s+', '? ... ', cleaned)
-        # Add pause after exclamation
-        cleaned = re.sub(r'!\s+', '! ... ', cleaned)
+        # Add filler sounds for naturalness
+        cleaned = re.sub(r'So basically', 'So,,, basically', cleaned)
+        cleaned = re.sub(r'OK so', 'OK,, so', cleaned)
+        cleaned = re.sub(r'And honestly', 'And,, honestly', cleaned)
+        cleaned = re.sub(r'But trust me', 'But,, trust me', cleaned)
+        cleaned = re.sub(r'First thing', 'First thing,,', cleaned)
 
-        cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         cleaned = re.sub(r'[ \t]+', ' ', cleaned)
+        cleaned = re.sub(r',{5,}', ',,,,', cleaned)
         return cleaned.strip()
 
-    async def _generate_audio_with_timestamps(self, text, output_path,
-                                                subtitle_path=None,
-                                                rate="+15%", pitch="+2Hz"):
+    async def _generate_audio(self, text, output_path, subtitle_path=None,
+                                rate="+5%", pitch="+1Hz"):
         cleaned = self._clean_for_tts(text)
         if not cleaned:
             return None
@@ -78,139 +84,98 @@ class VoiceMaker:
 
         with open(output_path, "wb") as f:
             f.write(bytes(audio_data))
-
-        logger.info(f"   📁 Audio: {output_path} ({len(audio_data)} bytes)")
+        logger.info(f"   📁 {output_path} ({len(audio_data)} bytes)")
 
         if subtitle_path and word_boundaries:
-            self._create_srt(word_boundaries, subtitle_path)
-
+            self._write_srt(word_boundaries, subtitle_path)
         return output_path
 
-    def _create_srt(self, boundaries, output_path):
+    def _write_srt(self, boundaries, path):
         srt = []
         idx = 1
         words = []
         start = None
-        end = None
-
         for b in boundaries:
             s = b["offset"] / 10_000_000
             e = s + b["duration"] / 10_000_000
+            if b["text"].strip() in [',', ',,', ',,,', ',,,,', '']:
+                continue
             if start is None:
                 start = s
             words.append(b["text"])
-            end = e
-
-            if len(words) >= 6:
-                srt.append(f"{idx}\n{self._fmt(start)} --> {self._fmt(end)}\n{' '.join(words)}\n")
+            if len(words) >= 5:
+                srt.append(f"{idx}\n{self._ts(start)} --> {self._ts(e)}\n{' '.join(words)}\n")
                 idx += 1
                 words = []
                 start = None
-
         if words:
-            srt.append(f"{idx}\n{self._fmt(start)} --> {self._fmt(end)}\n{' '.join(words)}\n")
-
-        with open(output_path, "w", encoding="utf-8") as f:
+            srt.append(f"{idx}\n{self._ts(start)} --> {self._ts(e)}\n{' '.join(words)}\n")
+        with open(path, "w", encoding="utf-8") as f:
             f.write("\n".join(srt))
 
-    def _fmt(self, s):
-        if s is None:
-            s = 0
-        h = int(s // 3600)
-        m = int((s % 3600) // 60)
-        sec = int(s % 60)
-        ms = int((s % 1) * 1000)
-        return f"{h:02d}:{m:02d}:{sec:02d},{ms:03d}"
+    def _ts(self, s):
+        s = s or 0
+        return f"{int(s//3600):02d}:{int((s%3600)//60):02d}:{int(s%60):02d},{int((s%1)*1000):03d}"
 
     def generate_full_audio(self, script, output_path, subtitle_path=None):
-        logger.info(f"🎙️ STEP: Generating voiceover...")
-        logger.info(f"   Words: {len(script.split())}")
-
+        logger.info(f"🎙️ Full audio ({len(script.split())} words)...")
         processed = self.breathing_processor.process_script(script, self.language)
-        logger.info(f"   ✅ Duration est: {processed.total_estimated_duration:.0f}s")
-        logger.info(f"   ✅ Emotions: {', '.join(processed.emotions_used)}")
+        logger.info(f"   Est: {processed.total_estimated_duration:.0f}s")
 
         if subtitle_path and subtitle_path.endswith('.vtt'):
             subtitle_path = subtitle_path.replace('.vtt', '.srt')
 
-        asyncio.run(self._generate_audio_with_timestamps(
-            text=script, output_path=output_path,
-            subtitle_path=subtitle_path,
-            rate="+15%", pitch="+2Hz"
-        ))
-
+        # SLOWER rate for natural sound
+        asyncio.run(self._generate_audio(script, output_path, subtitle_path,
+                                          rate="+5%", pitch="+1Hz"))
         self._post_process(output_path)
-        duration = self._get_duration(output_path)
-        size = os.path.getsize(output_path) / (1024 * 1024)
-
-        logger.info(f"   ✅ Audio: {duration:.1f}s, {size:.1f} MB")
+        dur = self._get_duration(output_path)
+        logger.info(f"   ✅ {dur:.1f}s, {os.path.getsize(output_path)/(1024*1024):.1f} MB")
         return output_path
 
     def generate_section_audios(self, sections, output_dir):
-        logger.info(f"🎙️ Generating {len(sections)} section audios...")
+        logger.info(f"🎙️ {len(sections)} sections...")
         os.makedirs(output_dir, exist_ok=True)
         results = []
-
+        section_speeds = {
+            'HOOK': ('+8%', '+2Hz'),
+            'SECTION_1': ('+5%', '+1Hz'),
+            'SECTION_2': ('+3%', '+0Hz'),
+            'SECTION_3': ('+5%', '+1Hz'),
+            'SECTION_4': ('+8%', '+2Hz'),
+            'CTA': ('+3%', '+1Hz'),
+        }
         for i, sec in enumerate(sections):
-            marker = sec.get('marker', f'S{i}')
+            mk = sec.get('marker', f'S{i}')
             text = sec.get('text', '')
             if not text.strip():
                 continue
-
-            wc = len(text.split())
-            logger.info(f"   🎤 [{marker}] {wc} words...")
-
-            ap = os.path.join(output_dir, f"section_{i:02d}_{marker.lower()}.mp3")
-            sp = os.path.join(output_dir, f"section_{i:02d}_{marker.lower()}.srt")
-
-            rate, pitch = self._section_params(marker)
-
+            ap = os.path.join(output_dir, f"section_{i:02d}_{mk.lower()}.mp3")
+            sp = os.path.join(output_dir, f"section_{i:02d}_{mk.lower()}.srt")
+            rate, pitch = section_speeds.get(mk, ('+5%', '+1Hz'))
             try:
-                asyncio.run(self._generate_audio_with_timestamps(
-                    text=text, output_path=ap, subtitle_path=sp,
-                    rate=rate, pitch=pitch
-                ))
+                asyncio.run(self._generate_audio(text, ap, sp, rate, pitch))
                 self._post_process(ap)
                 dur = self._get_duration(ap)
-
-                results.append({
-                    'section_marker': marker, 'section_title': sec.get('title', marker),
-                    'audio_path': ap, 'subtitle_path': sp,
-                    'duration': dur, 'text': text, 'word_count': wc
-                })
-                logger.info(f"   ✅ [{marker}] {dur:.1f}s")
-
+                results.append({'section_marker': mk, 'section_title': sec.get('title', mk),
+                               'audio_path': ap, 'subtitle_path': sp, 'duration': dur,
+                               'text': text, 'word_count': len(text.split())})
+                logger.info(f"   ✅ [{mk}] {dur:.1f}s")
             except Exception as e:
-                logger.error(f"   ❌ [{marker}] Failed: {e}")
+                logger.error(f"   ❌ [{mk}] {e}")
                 try:
-                    comm = edge_tts.Communicate(text=self._clean_for_tts(text),
-                                                 voice=self.voice, rate=rate, pitch=pitch)
-                    asyncio.run(comm.save(ap))
+                    asyncio.run(edge_tts.Communicate(
+                        text=self._clean_for_tts(text), voice=self.voice,
+                        rate=rate, pitch=pitch).save(ap))
                     self._post_process(ap)
                     dur = self._get_duration(ap)
-                    results.append({
-                        'section_marker': marker, 'section_title': sec.get('title', marker),
-                        'audio_path': ap, 'subtitle_path': None,
-                        'duration': dur, 'text': text, 'word_count': wc
-                    })
-                    logger.info(f"   ✅ [{marker}] {dur:.1f}s (no subs)")
-                except Exception as e2:
-                    logger.error(f"   ❌ [{marker}] Retry failed: {e2}")
-
-        total = sum(r['duration'] for r in results)
-        logger.info(f"   ✅ Total: {len(results)} sections, {total:.0f}s")
+                    results.append({'section_marker': mk, 'section_title': sec.get('title', mk),
+                                   'audio_path': ap, 'subtitle_path': None, 'duration': dur,
+                                   'text': text, 'word_count': len(text.split())})
+                except Exception:
+                    pass
+        logger.info(f"   ✅ {len(results)} audios, {sum(r['duration'] for r in results):.0f}s total")
         return results
-
-    def _section_params(self, marker):
-        """Fast energetic voice per section type"""
-        return {
-            'HOOK': ('+18%', '+4Hz'),
-            'SECTION_1': ('+15%', '+2Hz'),
-            'SECTION_2': ('+12%', '+0Hz'),
-            'SECTION_3': ('+15%', '+3Hz'),
-            'SECTION_4': ('+18%', '+4Hz'),
-            'CTA': ('+12%', '+2Hz'),
-        }.get(marker, ('+15%', '+2Hz'))
 
     def _post_process(self, path):
         if not os.path.exists(path) or os.path.getsize(path) < 100:
@@ -219,9 +184,9 @@ class VoiceMaker:
         try:
             subprocess.run([
                 'ffmpeg', '-y', '-i', path,
-                '-af', 'loudnorm=I=-16:LRA=11:TP=-1.5',
+                '-af', 'loudnorm=I=-16:LRA=11:TP=-1.5,equalizer=f=3000:width_type=h:width=1000:g=1',
                 '-ar', '44100', '-ac', '1', '-b:a', '192k', tmp
-            ], capture_output=True, text=True, timeout=120)
+            ], capture_output=True, timeout=120)
             if os.path.exists(tmp) and os.path.getsize(tmp) > 100:
                 os.replace(tmp, path)
             elif os.path.exists(tmp):
@@ -237,7 +202,4 @@ class VoiceMaker:
                               capture_output=True, text=True, timeout=30)
             return float(r.stdout.strip())
         except Exception:
-            try:
-                return os.path.getsize(path) / 24000
-            except Exception:
-                return 30.0
+            return os.path.getsize(path) / 24000 if os.path.exists(path) else 30
