@@ -21,7 +21,7 @@ concurrency:
 jobs:
   build-video:
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 90
     permissions:
       contents: write
 
@@ -37,28 +37,23 @@ jobs:
       - name: Install dependencies
         timeout-minutes: 10
         run: |
-          echo "Installing ffmpeg..."
           sudo apt-get update -qq || true
-          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg libgl1 || {
-            echo "Retry..."
-            sudo apt-get install -y ffmpeg || true
-          }
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y ffmpeg libgl1 || sudo apt-get install -y ffmpeg || true
           echo "FFmpeg: $(which ffmpeg && echo OK || echo MISSING)"
-          echo "Installing Python packages..."
           pip install --upgrade pip
           pip install -r requirements.txt
-          echo "Done"
 
       - name: Setup
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
         run: |
           mkdir -p config/cookies assets/fonts assets/music output/logs/screenshots
           echo '{"cookies":[]}' > config/cookies/telugu_channel.json
           echo '{"cookies":[]}' > config/cookies/hindi_channel.json
 
           if [ ! -f "config/config.yaml" ]; then
-            echo "ERROR: config/config.yaml not found!"
-            echo "Make sure it exists in your repository."
-            ls -la config/ || echo "config/ directory missing"
+            echo "ERROR: config/config.yaml missing!"
             exit 1
           fi
 
@@ -71,28 +66,15 @@ jobs:
 
           python3 << 'PYEOF'
           import yaml, os
-
-          config_path = "config/config.yaml"
-          if not os.path.exists(config_path):
-              print(f"ERROR: {config_path} not found in repo!")
-              exit(1)
-
-          with open(config_path, 'r') as f:
+          with open('config/config.yaml', 'r') as f:
               config = yaml.safe_load(f)
-
           config['gemini']['api_key'] = os.environ.get('GEMINI_API_KEY', '')
           config['footage']['pexels_api_key'] = os.environ.get('PEXELS_API_KEY', '')
-
-          with open(config_path, 'w') as f:
+          with open('config/config.yaml', 'w') as f:
               yaml.dump(config, f, default_flow_style=False, allow_unicode=True)
-
           print(f"Gemini: {'SET' if os.environ.get('GEMINI_API_KEY') else 'MISSING'}")
           print(f"Pexels: {'SET' if os.environ.get('PEXELS_API_KEY') else 'MISSING'}")
-          print("Config updated")
           PYEOF
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
 
       - name: Build Video and Upload to Drive
         env:
@@ -100,6 +82,10 @@ jobs:
           PEXELS_API_KEY: ${{ secrets.PEXELS_API_KEY }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           GROQ_API_KEY_2: ${{ secrets.GROQ_API_KEY_2 }}
+          CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+          SAMBANOVA_API_KEY: ${{ secrets.SAMBANOVA_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
+          HF_API_KEY: ${{ secrets.HF_API_KEY }}
           GDRIVE_REFRESH_TOKEN: ${{ secrets.GDRIVE_REFRESH_TOKEN }}
           GDRIVE_CLIENT_ID: ${{ secrets.GDRIVE_CLIENT_ID }}
           GDRIVE_CLIENT_SECRET: ${{ secrets.GDRIVE_CLIENT_SECRET }}
@@ -112,7 +98,6 @@ jobs:
           echo "  VIDEO QUALITY BUILDER"
           echo "  Language: $LANGUAGE"
           echo "  Time: $(date)"
-          echo "  Mode: Video + Drive (no YouTube upload)"
           echo "========================================="
           python video_builder.py --language "$LANGUAGE"
 
