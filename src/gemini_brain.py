@@ -1,5 +1,6 @@
 """
-AI BRAIN — Multi-Provider with 3-Part Script Generation
+AI BRAIN — All Free Providers with Auto-Rotation
+Providers: Gemini, Groq, Cerebras, SambaNova, OpenRouter, GitHub Models, HuggingFace
 """
 
 import json
@@ -7,58 +8,57 @@ import time
 import logging
 import re
 import os
+import random
 import requests as http_requests
 
 logger = logging.getLogger(__name__)
 
 
-class AIProvider:
-    def __init__(self, name, api_key):
-        self.name = name
-        self.api_key = api_key
-        self.available = bool(api_key)
-    def generate(self, prompt):
-        raise NotImplementedError
+def _call_openai_api(url, key, model, prompt):
+    resp = http_requests.post(url,
+        json={"model": model, "messages": [{"role": "user", "content": prompt}],
+              "max_tokens": 8192, "temperature": 0.9},
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+        timeout=90)
+    if resp.status_code == 429:
+        raise Exception("Rate limited")
+    if resp.status_code not in [200, 201]:
+        raise Exception(f"Error {resp.status_code}: {resp.text[:200]}")
+    ch = resp.json().get("choices", [])
+    if not ch:
+        raise Exception("No choices")
+    return ch[0].get("message", {}).get("content", "")
 
 
-class GeminiProvider(AIProvider):
-    def __init__(self, api_key, model="gemini-2.0-flash-lite"):
-        super().__init__(f"Gemini ({model})", api_key)
-        self.model = model
-        self.base_url = "https://generativelanguage.googleapis.com/v1beta"
-    def generate(self, prompt):
-        url = f"{self.base_url}/models/{self.model}:generateContent?key={self.api_key}"
-        resp = http_requests.post(url, json={
-            "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {"temperature": 0.9, "topP": 0.95, "maxOutputTokens": 8192}
-        }, headers={"Content-Type": "application/json"}, timeout=90)
-        if resp.status_code == 429:
-            raise Exception("Gemini rate limited")
-        if resp.status_code != 200:
-            raise Exception(f"Gemini {resp.status_code}: {resp.text[:200]}")
-        c = resp.json().get("candidates", [])
-        if not c:
-            raise Exception("No candidates")
-        p = c[0].get("content", {}).get("parts", [])
-        return p[0].get("text", "") if p else ""
+def _call_gemini_api(key, model, prompt):
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+    resp = http_requests.post(url,
+        json={"contents": [{"parts": [{"text": prompt}]}],
+              "generationConfig": {"temperature": 0.9, "topP": 0.95, "maxOutputTokens": 8192}},
+        headers={"Content-Type": "application/json"}, timeout=90)
+    if resp.status_code == 429:
+        raise Exception("Rate limited")
+    if resp.status_code != 200:
+        raise Exception(f"Error {resp.status_code}: {resp.text[:200]}")
+    c = resp.json().get("candidates", [])
+    if not c:
+        raise Exception("No candidates")
+    p = c[0].get("content", {}).get("parts", [])
+    return p[0].get("text", "") if p else ""
 
 
-class GroqProvider(AIProvider):
-    def __init__(self, api_key, model="llama-3.3-70b-versatile"):
-        super().__init__(f"Groq ({model})", api_key)
-        self.model = model
-    def generate(self, prompt):
-        resp = http_requests.post("https://api.groq.com/openai/v1/chat/completions",
-            json={"model": self.model, "messages": [{"role": "user", "content": prompt}],
-                  "temperature": 0.9, "max_tokens": 8192},
-            headers={"Content-Type": "application/json",
-                     "Authorization": f"Bearer {self.api_key}"}, timeout=90)
-        if resp.status_code == 429:
-            raise Exception("Groq rate limited")
-        if resp.status_code != 200:
-            raise Exception(f"Groq {resp.status_code}: {resp.text[:200]}")
-        ch = resp.json().get("choices", [])
-        return ch[0].get("message", {}).get("content", "") if ch else ""
+def _call_hf_api(key, model, prompt):
+    resp = http_requests.post(f"https://api-inference.huggingface.co/models/{model}",
+        json={"inputs": prompt, "parameters": {"max_new_tokens": 4096, "temperature": 0.9}},
+        headers={"Authorization": f"Bearer {key}"}, timeout=90)
+    if resp.status_code == 429:
+        raise Exception("Rate limited")
+    if resp.status_code != 200:
+        raise Exception(f"Error {resp.status_code}: {resp.text[:200]}")
+    data = resp.json()
+    if isinstance(data, list) and data:
+        return data[0].get("generated_text", "")
+    return str(data)
 
 
 class GeminiBrain:
@@ -66,37 +66,115 @@ class GeminiBrain:
         import yaml
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
-        self.gemini_key = os.environ.get('GEMINI_API_KEY',
-            self.config.get('gemini', {}).get('api_key', ''))
-        self.groq_key = os.environ.get('GROQ_API_KEY', '')
-        self.groq_key_2 = os.environ.get('GROQ_API_KEY_2', '')
-        for attr in ['gemini_key', 'groq_key', 'groq_key_2']:
-            if '${' in str(getattr(self, attr)):
-                setattr(self, attr, os.environ.get(attr.upper().replace('_KEY', '_API_KEY'), ''))
 
         self.providers = []
-        if self.gemini_key:
-            self.providers.append(GeminiProvider(self.gemini_key, "gemini-2.0-flash-lite"))
-        if self.groq_key:
-            self.providers.append(GroqProvider(self.groq_key, "llama-3.3-70b-versatile"))
-        if self.groq_key_2:
-            self.providers.append(GroqProvider(self.groq_key_2, "qwen-qwq-32b"))
-        if self.gemini_key:
-            self.providers.append(GeminiProvider(self.gemini_key, "gemini-2.0-flash"))
+
+        def key(name):
+            k = os.environ.get(name, '')
+            return k if k and '${' not in k and len(k) > 5 else ''
+
+        # Groq — 14,400/day
+        k = key('GROQ_API_KEY')
+        if k:
+            self.providers.append({
+                'name': 'Groq-1 (llama-3.3-70b)',
+                'call': lambda p, _k=k: _call_openai_api(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    _k, "llama-3.3-70b-versatile", p)
+            })
+
+        k = key('GROQ_API_KEY_2')
+        if k:
+            self.providers.append({
+                'name': 'Groq-2 (llama-3.3-70b)',
+                'call': lambda p, _k=k: _call_openai_api(
+                    "https://api.groq.com/openai/v1/chat/completions",
+                    _k, "llama-3.3-70b-versatile", p)
+            })
+
+        # Gemini — 1,500/day
+        k = key('GEMINI_API_KEY')
+        if k:
+            self.providers.append({
+                'name': 'Gemini (2.0-flash)',
+                'call': lambda p, _k=k: _call_gemini_api(_k, "gemini-2.0-flash", p)
+            })
+
+        # Cerebras — 1,000/day
+        k = key('CEREBRAS_API_KEY')
+        if k:
+            self.providers.append({
+                'name': 'Cerebras (llama-3.3-70b)',
+                'call': lambda p, _k=k: _call_openai_api(
+                    "https://api.cerebras.ai/v1/chat/completions",
+                    _k, "llama-3.3-70b", p)
+            })
+
+        # SambaNova — 1,000/day
+        k = key('SAMBANOVA_API_KEY')
+        if k:
+            self.providers.append({
+                'name': 'SambaNova (llama-3.3-70b)',
+                'call': lambda p, _k=k: _call_openai_api(
+                    "https://api.sambanova.ai/v1/chat/completions",
+                    _k, "Meta-Llama-3.3-70B-Instruct", p)
+            })
+
+        # OpenRouter — free models
+        k = key('OPENROUTER_API_KEY')
+        if k:
+            self.providers.append({
+                'name': 'OpenRouter (llama-free)',
+                'call': lambda p, _k=k: _call_openai_api(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    _k, "meta-llama/llama-3.3-70b-instruct:free", p)
+            })
+
+        # GitHub Models — free automatic
+        k = key('GITHUB_TOKEN')
+        if k:
+            self.providers.append({
+                'name': 'GitHub (gpt-4o-mini)',
+                'call': lambda p, _k=k: _call_openai_api(
+                    "https://models.inference.ai.azure.com/chat/completions",
+                    _k, "gpt-4o-mini", p)
+            })
+
+        # HuggingFace — free
+        k = key('HF_API_KEY')
+        if k:
+            self.providers.append({
+                'name': 'HuggingFace (Mistral)',
+                'call': lambda p, _k=k: _call_hf_api(
+                    _k, "mistralai/Mistral-7B-Instruct-v0.3", p)
+            })
+
+        # Gemini lite as last fallback
+        k = key('GEMINI_API_KEY')
+        if k:
+            self.providers.append({
+                'name': 'Gemini (2.0-flash-lite)',
+                'call': lambda p, _k=k: _call_gemini_api(_k, "gemini-2.0-flash-lite", p)
+            })
+
         if not self.providers:
-            raise Exception("No AI keys!")
-        logger.info("🧠 AI Brain ready")
+            raise Exception("No AI keys found!")
+
+        logger.info(f"🧠 AI Brain: {len(self.providers)} providers")
         for p in self.providers:
-            logger.info(f"   → {p.name}")
+            logger.info(f"   → {p['name']}")
 
     def _call_ai(self, prompt, expect_json=False):
+        providers = list(self.providers)
+        random.shuffle(providers)
         last_err = None
-        for prov in self.providers:
-            if not prov.available:
-                continue
+
+        for prov in providers:
             try:
-                logger.info(f"   🤖 {prov.name}...")
-                text = prov.generate(prompt).strip()
+                logger.info(f"   🤖 {prov['name']}...")
+                text = prov['call'](prompt).strip()
+                if not text:
+                    raise Exception("Empty response")
                 logger.info(f"   ✅ {len(text)} chars")
                 if expect_json:
                     text = re.sub(r'```json\s*|```\s*', '', text).strip()
@@ -111,19 +189,20 @@ class GeminiBrain:
             except Exception as e:
                 logger.warning(f"   ⚠️ {str(e)[:80]}")
                 last_err = e
-                if '429' in str(e) or 'rate' in str(e).lower():
+                if 'rate' in str(e).lower() or '429' in str(e):
                     continue
                 time.sleep(2)
                 continue
-        raise Exception(f"All failed: {last_err}")
+
+        raise Exception(f"All {len(providers)} providers failed: {last_err}")
 
     def generate_topics(self, niche, language, trend_data=None, count=3):
         logger.info(f"🧠 Topics: '{niche}'")
         trends = ""
         if trend_data:
             trends = f"\nTrending: {json.dumps([t.get('topic','') for t in trend_data[:5]])}\n"
-        prompt = f"""Generate {count} FASCINATING YouTube topics. Niche: {niche}. Language: {language}. Audience: India 16-35.
-{trends}Each topic must have WOW factor — unknown facts, surprising connections.
+        prompt = f"""Generate {count} FASCINATING YouTube topics. Niche: {niche}. Language: {language}.
+{trends}WOW factor, unknown facts. NOT generic.
 Return JSON: [{{"topic":"English","topic_local":"{language}","search_keywords":["k1","k2"],"why_viral":"reason","emotions_map":{{"hook":"excited","section_1":"curious","section_2":"serious","section_3":"cheerful","section_4":"excited","cta":"warm"}},"sections":["S1","S2","S3","S4"],"estimated_interest":"high"}}]"""
         topics = self._call_ai(prompt, expect_json=True)
         if not isinstance(topics, list):
@@ -133,152 +212,82 @@ Return JSON: [{{"topic":"English","topic_local":"{language}","search_keywords":[
         return topics
 
     def generate_script(self, topic_data, language, target_words=2000):
-        """Generate script in 3 PARTS for 10-minute video"""
+        """3-PART generation for 10-min video"""
         topic = topic_data.get('topic', '')
         topic_local = topic_data.get('topic_local', topic)
-        logger.info(f"🧠 Script: '{topic}' (3-part generation)")
+        logger.info(f"🧠 Script: '{topic}' (3 parts)")
 
-        style = """STYLE RULES:
-- Tenglish: Telugu script + 40% English words mixed naturally
-- SHORT lines: max 12 words per line, one thought per line
-- Filler words for natural flow: "So basically…", "And honestly…", "OK so…", "Right?"
-- Breathing cues: Add "…" between thoughts (speaker pauses here)
-- Audience interaction: "మీకు ఏమనిపిస్తుంది?", "Crazy right?", "Comment చేయండి"
-- NO like/subscribe/share ANYWHERE except final [CTA]
-- Every sentence = NEW unique fact or insight
-- Tell mini stories (3-4 lines about real people/events)
-- Use specific numbers: years, percentages, counts
+        style = """STYLE:
+- Tenglish: Telugu script + 40% English naturally
+- SHORT lines: max 12 words per line
+- Fillers: "So basically…", "hmm…", "OK so…"
+- Pauses: "…" between thoughts
+- Questions: "Crazy right?", "Comment చేయండి"
+- NO like/subscribe except final CTA
+- Every sentence = NEW fact with numbers
+- Mini stories, Indian examples
+- React: "Whoa!", "Mind blown!"
 
 EXAMPLE:
-Guys… ఈ topic వింటే మీరు shock అవుతారు!
+Guys… ఈ topic వింటే shock అవుతారు!
 
 India lo ఒక ancient temple ఉంది…
 దాని age ఎంతో తెలుసా?
 
-Almost 1500 years old!
+hmm… Almost 1500 years old!
 
-And honestly… most people don't even know about this.
+And honestly… most people don't know this.
 
-So basically… ఈ temple ని Pallava dynasty build చేసింది…
-7th century lo.
+Crazy right?"""
 
-ఆ time lo India ఎంత advanced గా ఉందంటే…
-Europe ఇంకా dark ages lo ఉంది!
-
-Crazy right?
-
-OK so next fact ఇంకా mind-blowing…"""
-
-        # PART 1: Hook + Section 1
-        p1_prompt = f"""You are India's top YouTuber. Write PART 1 of a script about: "{topic}"
+        p1 = f"""Top YouTuber. PART 1 about: "{topic}"
 {style}
+[HOOK] (250+ words. "Guys…" + shocking. "Ready? Let's go!")
+[SECTION_1: {{Tenglish title}}] (300+ words. "OK so first thing…" Facts, story. "ఇది just beginning 👀")
+[VISUAL: scene] every 3 lines. 500+ words. Script only."""
 
-Write these sections:
+        part1 = self._call_ai(p1)
+        logger.info(f"   Part1: {len(part1.split())} words")
+        time.sleep(3)
 
-[HOOK]
-(200+ words. Start: "Guys…" + shocking fact.
-Build curiosity. Ask impossible question.
-Promise what they'll learn.
-End: "So… ready ah? Let's go!")
-
-[SECTION_1: {{Catchy Tenglish title}}]
-(300+ words. "OK so first thing…"
-3-4 UNIQUE facts with specific numbers.
-One mini story about real person/place.
-End: "ఇది just beginning… next part ఇంకా crazy 👀")
-
-Add [VISUAL: specific scene description] every 3-4 lines.
-Write 500+ words total. ONLY script text."""
-
-        part1 = self._call_ai(p1_prompt)
-        logger.info(f"   Part 1: {len(part1.split())} words")
-
-        # PART 2: Section 2 + Section 3
-        p2_prompt = f"""Continue this YouTube script about "{topic}". Same Tenglish style.
+        p2 = f"""Continue about "{topic}". Same style.
 {style}
+Context: {part1[:600]}
+[SECTION_2: {{title}}] (300+ words. Surprising facts, twist.)
+[SECTION_3: {{title}}] (300+ words. Daily life India examples.)
+500+ words. NO subscribe. Script only."""
 
-PREVIOUS CONTENT (for context only, don't repeat):
-{part1[:1000]}
+        part2 = self._call_ai(p2)
+        logger.info(f"   Part2: {len(part2.split())} words")
+        time.sleep(3)
 
-Now write NEXT sections:
-
-[SECTION_2: {{Catchy Tenglish title}}]
-(300+ words. "ఇప్పుడు real interesting part ki వస్తే…"
-The SURPRISING angle nobody talks about.
-Counter-intuitive facts. "Believe చేయరు కానీ…"
-A dramatic reveal/twist moment.)
-
-[SECTION_3: {{Catchy Tenglish title}}]
-(300+ words. "Real life connection…"
-How this affects THEIR daily life in India.
-Examples: phone, food, city, job.
-"మీ daily life lo ఇది already ఉంది… తెలుసా?"
-Make it personal.)
-
-Add [VISUAL: specific scene] every 3-4 lines.
-Write 500+ words. NO like/subscribe. ONLY script."""
-
-        part2 = self._call_ai(p2_prompt)
-        logger.info(f"   Part 2: {len(part2.split())} words")
-
-        # PART 3: Section 4 + CTA
-        p3_prompt = f"""Final part of YouTube script about "{topic}". Same Tenglish style.
+        p3 = f"""Final part about "{topic}". Same style.
 {style}
+[SECTION_4: {{title}}] (200+ words. Mind-blowing fact.)
+[CTA] (100+ words. ONLY subscribe here. "👍 Like 🔔 Subscribe" "Thanks ❤️")
+300+ words. Script only."""
 
-Write final sections:
+        part3 = self._call_ai(p3)
+        logger.info(f"   Part3: {len(part3.split())} words")
 
-[SECTION_4: {{Catchy Tenglish title}}]
-(200+ words. "OK guys… biggest revelation…"
-Most MIND-BLOWING fact saved for last.
-Build tension: "Ready?… 3… 2… 1…"
-Drop the bomb. React: "Crazy right?!")
+        for pat in [r'.*like చేయండి.*subscribe.*', r'.*subscribe చేయండి.*',
+                    r'.*bell icon.*', r'.*like కొట్టండి.*']:
+            part1 = re.sub(pat, '', part1, flags=re.IGNORECASE)
+            part2 = re.sub(pat, '', part2, flags=re.IGNORECASE)
 
-[CTA]
-(100+ words. ONLY place for like/subscribe.
-"So guys… ఈ video lo main takeaways…"
-3 bullet point facts they learned.
-"👍 Like 🔔 Subscribe 📢 Share"
-"Comment lo చెప్పండి — [question]"
-"Next video ఇంకా mind-blowing!"
-"Thanks for watching ❤️")
-
-Write 300+ words. Script text only."""
-
-        part3 = self._call_ai(p3_prompt)
-        logger.info(f"   Part 3: {len(part3.split())} words")
-
-        # Combine all parts
         script = part1 + "\n\n" + part2 + "\n\n" + part3
-        total = len(script.split())
-        logger.info(f"   ✅ Total script: {total} words")
-
-        # Clean: remove mid-script subscribe mentions
-        clean_lines = []
-        in_cta = False
-        remove_patterns = [
-            r'.*like చేయండి.*subscribe.*', r'.*subscribe చేయండి.*',
-            r'.*bell icon.*', r'.*channel.*subscribe.*',
-            r'.*like కొట్టండి.*', r'.*share చేయండి.*subscribe.*'
-        ]
-        for line in script.split('\n'):
-            if '[CTA]' in line:
-                in_cta = True
-            if not in_cta:
-                skip = any(re.match(p, line, re.IGNORECASE) for p in remove_patterns)
-                if not skip:
-                    clean_lines.append(line)
-            else:
-                clean_lines.append(line)
-
-        return '\n'.join(clean_lines)
+        logger.info(f"   ✅ Total: {len(script.split())} words")
+        return script
 
     def review_script(self, script, language, topic):
         logger.info(f"🧠 Review...")
         try:
-            r = self._call_ai(f'Review script about "{topic}". Return JSON: {{"overall_score":8,"approved":true,"summary":"ok"}}', expect_json=True)
+            r = self._call_ai(
+                f'Rate script 1-10. JSON: {{"overall_score":8,"approved":true,"summary":"ok"}}',
+                expect_json=True)
         except Exception:
             r = {"overall_score": 7, "approved": True, "summary": "Skipped"}
-        logger.info(f"   📊 {r.get('overall_score',7)}/10")
+        logger.info(f"   📊 {r.get("overall_score", 7)}/10")
         return script, r
 
     def generate_metadata(self, topic_data, language, video_type="long"):
@@ -287,74 +296,71 @@ Write 300+ words. Script text only."""
         logger.info(f"🧠 Metadata ({video_type})...")
         try:
             if video_type == "long":
-                meta = self._call_ai(f'YouTube metadata in {language}. Topic: "{topic}". Return JSON: {{"title":"title with emoji","description":"SEO desc","tags":["tags"],"thumbnail_text":"2-4 words"}}', expect_json=True)
+                meta = self._call_ai(
+                    f'YouTube metadata {language}. Topic: "{topic}". '
+                    f'JSON: {{"title":"emoji title","description":"SEO","tags":["tags"],"thumbnail_text":"2-4 words"}}',
+                    expect_json=True)
             else:
-                meta = self._call_ai(f'Shorts metadata in {language}. Topic: "{topic}". Return JSON: {{"title":"title #shorts","description":"desc","tags":["tags"],"thumbnail_text":"1-3 words"}}', expect_json=True)
+                meta = self._call_ai(
+                    f'Shorts metadata {language}. "{topic}". '
+                    f'JSON: {{"title":"#shorts title","description":"desc","tags":["tags"],"thumbnail_text":"words"}}',
+                    expect_json=True)
         except Exception:
-            meta = {"title": topic_local or topic, "description": topic, "tags": [topic], "thumbnail_text": topic[:20]}
+            meta = {"title": topic_local or topic, "description": topic,
+                    "tags": [topic], "thumbnail_text": topic[:20]}
         if video_type == "short" and not any('#shorts' in str(t) for t in meta.get('tags', [])):
             meta.setdefault('tags', []).append('#shorts')
         return meta
 
     def get_footage_keywords(self, script):
-        """Extract SPECIFIC visual keywords for EACH section"""
-        logger.info(f"🧠 Footage keywords (section-specific)...")
-        sections_text = re.split(r'\[SECTION_\d+.*?\]|\[HOOK\]|\[CTA\]', script)
-        all_keywords = []
-
-        for i, section in enumerate(sections_text):
-            if len(section.strip()) < 50:
+        logger.info(f"🧠 Footage keywords...")
+        chunks = re.split(r'\[SECTION_\d+.*?\]|\[HOOK\]|\[CTA\]', script)
+        all_kw = []
+        for chunk in chunks:
+            if len(chunk.strip()) < 50:
                 continue
             try:
-                prompt = f"""From this script section, extract 3-4 SPECIFIC English keywords for stock VIDEO footage.
-Keywords must describe VISUAL SCENES that match what the speaker is talking about.
-NOT abstract words. SPECIFIC visual scenes.
-
-Good: "ancient indian temple carved stone", "woman warrior with sword battlefield"
-Bad: "history", "importance", "culture"
-
-SECTION:
-{section[:500]}
-
-Return JSON array: ["scene1", "scene2", "scene3"]"""
-
-                kw = self._call_ai(prompt, expect_json=True)
+                kw = self._call_ai(
+                    f'3 SPECIFIC stock video keywords for visual scenes. '
+                    f'NOT abstract. Example: "ancient temple sunset" '
+                    f'Text: {chunk[:400]} '
+                    f'JSON: ["scene1","scene2","scene3"]',
+                    expect_json=True)
                 if isinstance(kw, list):
-                    all_keywords.extend(kw)
+                    all_kw.extend(kw)
             except Exception:
                 pass
-
-        if len(all_keywords) < 5:
-            all_keywords.extend(["cinematic landscape india", "ancient ruins temple",
-                                "technology futuristic", "crowd indian city", "nature drone aerial"])
-
-        logger.info(f"   ✅ {len(all_keywords)} section-specific keywords")
-        return all_keywords
+            time.sleep(1)
+        if len(all_kw) < 5:
+            all_kw.extend(["cinematic india", "ancient ruins", "technology",
+                           "indian city aerial", "nature landscape"])
+        logger.info(f"   ✅ {len(all_kw)} keywords")
+        return all_kw
 
     def parse_script_sections(self, script):
         logger.info(f"🧠 Parsing...")
-        sections = []
-        current = None
-        lines = []
+        sections, current, lines = [], None, []
         for line in script.split('\n'):
             line = line.strip()
             m = re.match(r'\[(HOOK|SECTION_\d+|CTA)(?::\s*(.+?))?\]', line)
             if m:
                 if current:
-                    sections.append({'marker': current['marker'], 'title': current['title'],
-                                    'text': '\n'.join(lines).strip(),
-                                    'is_short_candidate': current['marker'] != 'CTA'})
+                    sections.append({
+                        'marker': current['marker'], 'title': current['title'],
+                        'text': '\n'.join(lines).strip(),
+                        'is_short_candidate': current['marker'] != 'CTA'})
                 current = {'marker': m.group(1), 'title': m.group(2) or m.group(1)}
                 lines = []
             elif line and not line.startswith('[VISUAL'):
                 lines.append(line)
         if current and lines:
-            sections.append({'marker': current['marker'], 'title': current['title'],
-                            'text': '\n'.join(lines).strip(),
-                            'is_short_candidate': current['marker'] != 'CTA'})
+            sections.append({
+                'marker': current['marker'], 'title': current['title'],
+                'text': '\n'.join(lines).strip(),
+                'is_short_candidate': current['marker'] != 'CTA'})
         if not sections:
-            paras = [p.strip() for p in script.split('\n\n') if p.strip()]
-            sections = [{'marker': 'HOOK', 'title': 'Content', 'text': script, 'is_short_candidate': True}]
+            sections = [{'marker': 'HOOK', 'title': 'Content',
+                         'text': script, 'is_short_candidate': True}]
         logger.info(f"   ✅ {len(sections)} sections")
         for s in sections:
             logger.info(f"      [{s['marker']}] {len(s['text'].split())} words")
